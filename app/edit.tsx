@@ -1,9 +1,8 @@
-import { useState, useEffect, useCallback } from 'react';
-import { View, Pressable } from '../src/tw';
+import React, { useEffect, useCallback } from 'react';
+import { View, Text as RNText, TouchableOpacity, StyleSheet } from 'react-native';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useRepoStore } from '../store/useRepoStore';
-import { RepoApp } from '../types/repo';
-import { List, ListItem, FieldGroup, TextInput, Button, useNativeState, Host, Text } from '@expo/ui';
+import { ListItem, FieldGroup, TextInput, Button, useNativeState, Host, Text } from '@expo/ui';
 
 export default function EditAppScreen() {
   const { bundleIdentifier } = useLocalSearchParams<{ bundleIdentifier: string }>();
@@ -51,8 +50,8 @@ export default function EditAppScreen() {
 
   if (!originalApp) {
     return (
-      <View className="flex-1 items-center justify-center bg-gray-50 dark:bg-zinc-950">
-        <Text className="text-gray-500 dark:text-gray-400">App not found.</Text>
+      <View style={styles.notFoundContainer}>
+        <RNText style={styles.notFoundText}>App not found.</RNText>
       </View>
     );
   }
@@ -78,14 +77,14 @@ export default function EditAppScreen() {
         options={{ 
           title: 'Edit App',
           headerRight: () => (
-            <Pressable onPress={handleSave} className="active:opacity-50">
-              <Text className="text-blue-500 font-semibold text-lg">Save</Text>
-            </Pressable>
+            <TouchableOpacity onPress={handleSave} activeOpacity={0.7} style={styles.headerBtn}>
+              <RNText style={styles.headerSaveText}>Save</RNText>
+            </TouchableOpacity>
           ),
           headerLeft: () => (
-            <Pressable onPress={() => router.back()} className="active:opacity-50">
-              <Text className="text-blue-500 text-lg">Cancel</Text>
-            </Pressable>
+            <TouchableOpacity onPress={() => router.back()} activeOpacity={0.7} style={styles.headerBtn}>
+              <RNText style={styles.headerCancelText}>Cancel</RNText>
+            </TouchableOpacity>
           )
         }} 
       />
@@ -99,7 +98,7 @@ export default function EditAppScreen() {
 
           <FieldGroup.Section title="Bundle Identifier (Read-only)">
             <ListItem>
-              <Text className="text-zinc-500 text-lg my-1">{originalApp.bundleIdentifier}</Text>
+              <Text>{originalApp.bundleIdentifier}</Text>
             </ListItem>
           </FieldGroup.Section>
 
@@ -135,3 +134,29 @@ export default function EditAppScreen() {
     </>
   );
 }
+
+const styles = StyleSheet.create({
+  notFoundContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#F2F2F7',
+  },
+  notFoundText: {
+    color: '#8E8E93',
+    fontSize: 16,
+  },
+  headerBtn: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  headerSaveText: {
+    color: '#007AFF',
+    fontWeight: '600',
+    fontSize: 17,
+  },
+  headerCancelText: {
+    color: '#007AFF',
+    fontSize: 17,
+  },
+});

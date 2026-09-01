@@ -93,7 +93,7 @@ export function AppCard({ app, drag, isActive, onEdit, onDelete, onDuplicate, in
     <View style={styles.cardWrapper}>
       <MenuView
         shouldOpenOnLongPress={true}
-        actions={menuActions}
+        actions={menuActions as any}
         onPressAction={({ nativeEvent }) => {
           if (nativeEvent.event === 'install') handleInstallPress();
           if (nativeEvent.event === 'edit') onEdit();

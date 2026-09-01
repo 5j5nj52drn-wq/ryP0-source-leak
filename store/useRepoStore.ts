@@ -24,11 +24,13 @@ interface RepoState {
   iconsList: GithubFile[];
   pendingIconSelection: string | null;
   isSearchOpen: boolean;
+  searchQuery: string;
 
   // Actions
   initializeStore: () => Promise<void>;
   setGithubToken: (token: string) => Promise<void>;
   setIsSearchOpen: (open: boolean) => void;
+  setSearchQuery: (query: string) => void;
   fetchRepo: () => Promise<void>;
   reorderApps: (apps: RepoApp[]) => void;
   updateApp: (index: number, app: RepoApp) => void;

@@ -49,11 +49,11 @@ export function FloatingNavBar() {
 
   const triggerHaptic = (style: 'light' | 'medium' = 'light') => {
     try {
-      Haptics.impactAsync(
+      Haptics?.impactAsync?.(
         style === 'light'
           ? Haptics.ImpactFeedbackStyle.Light
           : Haptics.ImpactFeedbackStyle.Medium
-      );
+      )?.catch?.(() => {});
     } catch (e) {}
   };
 

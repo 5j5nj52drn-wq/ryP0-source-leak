@@ -141,7 +141,7 @@ export default function AddAppTabScreen() {
       if (repo) {
         const existingBundleIds = new Set(repo.apps.map(a => a.bundleIdentifier));
         const newAppsToAdd = importedApps.filter(a => !existingBundleIds.has(a.bundleIdentifier));
-        
+
         reorderApps([...repo.apps, ...newAppsToAdd]);
         Alert.alert('Import Success', `Successfully imported ${newAppsToAdd.length} apps from repository.`);
         router.navigate('/(tabs)');

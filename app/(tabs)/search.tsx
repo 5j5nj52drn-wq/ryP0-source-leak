@@ -11,13 +11,11 @@ import {
   FlatList,
   Keyboard,
 } from 'react-native';
-import DraggableFlatList, { RenderItemParams } from 'react-native-draggable-flatlist';
-import Animated, { useAnimatedKeyboard, useAnimatedStyle, withSpring } from 'react-native-reanimated';
 import { useRouter } from 'expo-router';
 import { useRepoStore } from '../../store/useRepoStore';
 import { AppCard } from '../../components/AppCard';
 import { RepoApp } from '../../types/repo';
-import { Search as SearchIcon, X, RotateCw, Repeat, HardDrive, Inbox } from 'lucide-react-native';
+import { Search as SearchIcon, X, RotateCw, Repeat, HardDrive } from 'lucide-react-native';
 import { SymbolView } from 'expo-symbols';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -35,12 +33,9 @@ export default function SearchScreen() {
   const {
     repo,
     isLoading,
-    error,
     fetchRepo,
-    reorderApps,
     commitChanges,
     githubToken,
-    isDeveloperMode,
     initializeStore,
     searchQuery,
     setSearchQuery,
@@ -49,26 +44,11 @@ export default function SearchScreen() {
   const [selectedCategory, setSelectedCategory] = useState('all');
   const inputRef = useRef<TextInput>(null);
 
-  // 120fps Native Keyboard Tracking
-  const keyboard = useAnimatedKeyboard();
-
-  const animatedBottomStyle = useAnimatedStyle(() => {
-    // Sits directly above the Apple native tab bar
-    const baseBottom = insets.bottom > 0 ? insets.bottom + 52 : 72;
-    const keyboardHeight = keyboard.height.value;
-    const finalBottom = keyboardHeight > 0 ? keyboardHeight + 8 : baseBottom;
-
-    return {
-      bottom: finalBottom,
-    };
-  });
-
   useEffect(() => {
     initializeStore();
-    // Auto-focus search bar when entering search tab
     const timer = setTimeout(() => {
       inputRef.current?.focus();
-    }, 200);
+    }, 150);
     return () => clearTimeout(timer);
   }, []);
 
@@ -186,6 +166,39 @@ export default function SearchScreen() {
         </View>
       </View>
 
+      {/* Prominent Native Search Bar */}
+      <View style={styles.searchBarContainer}>
+        {Platform.OS === 'ios' ? (
+          <SymbolView name="magnifyingglass" size={18} tintColor="#007AFF" style={styles.searchIcon} />
+        ) : (
+          <SearchIcon size={18} color="#007AFF" style={styles.searchIcon} />
+        )}
+        <TextInput
+          ref={inputRef}
+          style={styles.searchInput}
+          placeholder="Search apps by name, bundle ID, developer..."
+          placeholderTextColor="#8E8E93"
+          value={searchQuery}
+          onChangeText={setSearchQuery}
+          autoCapitalize="none"
+          autoCorrect={false}
+          returnKeyType="search"
+          clearButtonMode="while-editing"
+          onSubmitEditing={() => Keyboard.dismiss()}
+        />
+        {searchQuery.length > 0 && Platform.OS !== 'ios' && (
+          <TouchableOpacity
+            onPress={() => {
+              setSearchQuery('');
+              inputRef.current?.focus();
+            }}
+            style={styles.clearBtn}
+          >
+            <X size={16} color="#8E8E93" />
+          </TouchableOpacity>
+        )}
+      </View>
+
       {/* Categories Horizontal Capsule */}
       <View style={styles.categoriesCapsule}>
         {CATEGORIES.map((cat) => {
@@ -219,12 +232,12 @@ export default function SearchScreen() {
     return (
       <View style={styles.emptyContainer}>
         {Platform.OS === 'ios' ? (
-          <SymbolView name="magnifyingglass" tintColor="#8E8E93" size={44} fallback="Search" />
+          <SymbolView name="magnifyingglass" tintColor="#8E8E93" size={44} />
         ) : (
           <SearchIcon size={40} color="#8E8E93" />
         )}
         <Text style={styles.emptyTitle}>
-          {searchQuery.trim() ? `No apps matching "${searchQuery}"` : 'Type below to search apps'}
+          {searchQuery.trim() ? `No apps matching "${searchQuery}"` : 'Type above to search apps'}
         </Text>
         <Text style={styles.emptySubtitle}>
           Filter by app name, bundle ID, or developer name in real time.
@@ -241,39 +254,10 @@ export default function SearchScreen() {
         renderItem={renderPlainItem}
         ListHeaderComponent={ListHeader}
         ListEmptyComponent={ListEmpty}
-        contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + 140 }]}
+        contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + 90 }]}
         showsVerticalScrollIndicator={false}
         keyboardDismissMode="on-drag"
       />
-
-      {/* Floating Interactive Search Bar directly above Navbar / Keyboard */}
-      <Animated.View style={[styles.floatingSearchContainer, animatedBottomStyle]}>
-        <View style={styles.searchPill}>
-          <SearchIcon size={20} color="#007AFF" />
-          <TextInput
-            ref={inputRef}
-            style={styles.searchInput}
-            placeholder="Search apps by name, bundle ID, developer..."
-            placeholderTextColor="#8E8E93"
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            autoCapitalize="none"
-            returnKeyType="search"
-            onSubmitEditing={() => Keyboard.dismiss()}
-          />
-          {searchQuery.length > 0 && (
-            <TouchableOpacity
-              onPress={() => {
-                setSearchQuery('');
-                inputRef.current?.focus();
-              }}
-              style={styles.clearBtn}
-            >
-              <X size={16} color="#8E8E93" />
-            </TouchableOpacity>
-          )}
-        </View>
-      </Animated.View>
     </View>
   );
 }
@@ -330,6 +314,37 @@ const styles = StyleSheet.create({
   actionBtn: {
     padding: 2,
   },
+  searchBarContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 22,
+    paddingHorizontal: 14,
+    height: 48,
+    marginBottom: 14,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 3,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(0, 0, 0, 0.08)',
+  },
+  searchIcon: {
+    marginRight: 10,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 16,
+    fontWeight: '500',
+    color: '#000000',
+    paddingVertical: 0,
+  },
+  clearBtn: {
+    padding: 4,
+    borderRadius: 12,
+    backgroundColor: '#E5E5EA',
+  },
   categoriesCapsule: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -384,39 +399,5 @@ const styles = StyleSheet.create({
     color: '#6B7280',
     textAlign: 'center',
     lineHeight: 18,
-  },
-  floatingSearchContainer: {
-    position: 'absolute',
-    left: 16,
-    right: 16,
-    zIndex: 9999,
-  },
-  searchPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 24,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    gap: 10,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.14,
-    shadowRadius: 16,
-    elevation: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(0, 0, 0, 0.08)',
-  },
-  searchInput: {
-    flex: 1,
-    fontSize: 15,
-    fontWeight: '500',
-    color: '#000000',
-    padding: 0,
-  },
-  clearBtn: {
-    padding: 4,
-    borderRadius: 12,
-    backgroundColor: '#E5E5EA',
   },
 });

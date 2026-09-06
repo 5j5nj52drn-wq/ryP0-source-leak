@@ -1,0 +1,420 @@
+import { fetch } from 'expo/fetch';
+import { RepoData } from '../types/repo';
+
+export const GITHUB_REPOSITORY = {
+  owner: 'ry0-x',
+  name: 'ry0-x.github.io',
+  branch: 'main',
+  repoPath: 'repo.json',
+  iconsPath: 'icons',
+} as const;
+
+// This CMS is intentionally single-admin. Repository write access is necessary
+// but not sufficient: only the project owner's verified GitHub identity may
+// unlock developer controls on a device.
+export const ADMIN_GITHUB_LOGIN = 'Sami-Wali';
+
+/**
+ * GitHub usernames are case-insensitive. Keep the identity decision in the
+ * data layer (rather than a settings-screen comparison) so every Developer
+ * Mode unlock follows the same single-admin rule.
+ */
+export function isAdminGitHubLogin(login: string | null | undefined): boolean {
+  return typeof login === 'string' && login.trim().toLowerCase() === ADMIN_GITHUB_LOGIN.toLowerCase();
+}
+
+const GITHUB_API_URL = 'https://api.github.com';
+const GITHUB_API_VERSION = '2026-03-10';
+const REQUEST_TIMEOUT_MS = 15_000;
+
+type GitHubErrorCode =
+  | 'AUTHENTICATION_FAILED'
+  | 'INSUFFICIENT_PERMISSION'
+  | 'RATE_LIMITED'
+  | 'CONFLICT'
+  | 'INVALID_RESPONSE'
+  | 'NETWORK_ERROR'
+  | 'REQUEST_FAILED';
+
+export class GitHubApiError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+    public readonly code: GitHubErrorCode,
+  ) {
+    super(message);
+    this.name = 'GitHubApiError';
+  }
+}
+
+export interface ValidatedGitHubAccount {
+  id: number;
+  login: string;
+  avatarUrl?: string;
+}
+
+interface GitHubUserResponse {
+  id: number;
+  login: string;
+  avatar_url?: string;
+}
+
+interface GitHubRepositoryResponse {
+  full_name: string;
+  permissions?: {
+    admin?: boolean;
+    maintain?: boolean;
+    push?: boolean;
+  };
+}
+
+interface GitHubContentResponse {
+  name: string;
+  type: string;
+  path: string;
+  sha: string;
+  size: number;
+  url: string;
+  html_url: string;
+  git_url: string;
+  encoding?: string;
+  content?: string;
+  download_url?: string | null;
+}
+
+interface GitHubUpdateResponse {
+  content?: {
+    sha?: string;
+  } | null;
+  commit?: {
+    sha?: string;
+  };
+}
+
+export interface RepositorySnapshot {
+  data: RepoData;
+  sha: string;
+}
+
+export interface RepositoryUpdateResult {
+  contentSha: string;
+  commitSha?: string;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function assertValidRepositoryData(value: unknown): asserts value is RepoData {
+  if (!isRecord(value) || !isNonEmptyString(value.name) || !isNonEmptyString(value.identifier)) {
+    throw new GitHubApiError('repo.json is missing its required name or identifier.', 0, 'INVALID_RESPONSE');
+  }
+
+  if (!Array.isArray(value.apps)) {
+    throw new GitHubApiError('repo.json must contain an apps array.', 0, 'INVALID_RESPONSE');
+  }
+
+  for (const [appIndex, app] of value.apps.entries()) {
+    if (
+      !isRecord(app) ||
+      !isNonEmptyString(app.name) ||
+      !isNonEmptyString(app.bundleIdentifier) ||
+      !isNonEmptyString(app.developerName) ||
+      !isNonEmptyString(app.iconURL) ||
+      !Array.isArray(app.versions)
+    ) {
+      throw new GitHubApiError(
+        `repo.json contains an invalid app at position ${appIndex + 1}.`,
+        0,
+        'INVALID_RESPONSE',
+      );
+    }
+
+    for (const [versionIndex, version] of app.versions.entries()) {
+      if (
+        !isRecord(version) ||
+        !isNonEmptyString(version.version) ||
+        !isNonEmptyString(version.date) ||
+        !isNonEmptyString(version.downloadURL) ||
+        typeof version.size !== 'number' ||
+        !Number.isFinite(version.size) ||
+        version.size < 0
+      ) {
+        throw new GitHubApiError(
+          `repo.json contains an invalid version for ${app.name} at position ${versionIndex + 1}.`,
+          0,
+          'INVALID_RESPONSE',
+        );
+      }
+    }
+  }
+}
+
+function encodePath(path: string): string {
+  return path.split('/').map(encodeURIComponent).join('/');
+}
+
+function utf8ToBase64(value: string): string {
+  const bytes = new TextEncoder().encode(value);
+  const chunkSize = 0x8000;
+  let binary = '';
+
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+
+  return btoa(binary);
+}
+
+function base64ToUtf8(value: string): string {
+  const binary = atob(value.replace(/\s/g, ''));
+  const bytes = new Uint8Array(binary.length);
+
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+
+  return new TextDecoder().decode(bytes);
+}
+
+function errorMessageFromPayload(payload: unknown): string | null {
+  return isRecord(payload) && typeof payload.message === 'string' ? payload.message : null;
+}
+
+async function githubRequest<T>(
+  path: string,
+  token?: string,
+  init: RequestInit = {},
+): Promise<T> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const headers = new Headers(init.headers);
+  headers.set('Accept', 'application/vnd.github+json');
+  headers.set('X-GitHub-Api-Version', GITHUB_API_VERSION);
+
+  if (token) {
+    headers.set('Authorization', `Bearer ${token}`);
+  }
+
+  if (init.body) {
+    headers.set('Content-Type', 'application/json');
+  }
+
+  try {
+    const response = await fetch(`${GITHUB_API_URL}${path}`, {
+      ...init,
+      headers,
+      signal: controller.signal,
+    });
+    const text = await response.text();
+    let payload: unknown = null;
+
+    if (text) {
+      try {
+        payload = JSON.parse(text);
+      } catch {
+        if (response.ok) {
+          throw new GitHubApiError('GitHub returned an unreadable response.', response.status, 'INVALID_RESPONSE');
+        }
+      }
+    }
+
+    if (!response.ok) {
+      const apiMessage = errorMessageFromPayload(payload);
+
+      if (response.status === 401) {
+        throw new GitHubApiError('The GitHub token is invalid or has expired.', 401, 'AUTHENTICATION_FAILED');
+      }
+
+      if (response.status === 409) {
+        throw new GitHubApiError(
+          'The repository changed since it was loaded. Refresh before committing so newer changes are not overwritten.',
+          409,
+          'CONFLICT',
+        );
+      }
+
+      if (response.status === 403 && response.headers.get('x-ratelimit-remaining') === '0') {
+        throw new GitHubApiError('GitHub rate limit reached. Try again after it resets.', 403, 'RATE_LIMITED');
+      }
+
+      if (response.status === 403 || response.status === 404) {
+        throw new GitHubApiError(
+          apiMessage || 'The token does not have access to this repository.',
+          response.status,
+          'INSUFFICIENT_PERMISSION',
+        );
+      }
+
+      throw new GitHubApiError(
+        apiMessage || `GitHub request failed with status ${response.status}.`,
+        response.status,
+        'REQUEST_FAILED',
+      );
+    }
+
+    return payload as T;
+  } catch (error) {
+    if (error instanceof GitHubApiError) {
+      throw error;
+    }
+
+    const isAbort = error instanceof Error && error.name === 'AbortError';
+    throw new GitHubApiError(
+      isAbort ? 'GitHub took too long to respond. Check your connection and try again.' : 'Unable to reach GitHub. Check your connection and try again.',
+      0,
+      'NETWORK_ERROR',
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export async function validateGitHubToken(token: string): Promise<ValidatedGitHubAccount> {
+  const normalizedToken = token.trim();
+  if (!normalizedToken) {
+    throw new GitHubApiError('Enter a GitHub personal access token.', 0, 'AUTHENTICATION_FAILED');
+  }
+
+  // Verify the token's owner before requesting any repository permissions.
+  // This avoids treating mere repository access as a Developer Mode signal.
+  const user = await githubRequest<GitHubUserResponse>('/user', normalizedToken);
+
+  if (!isNonEmptyString(user.login) || typeof user.id !== 'number') {
+    throw new GitHubApiError('GitHub returned an invalid account response.', 0, 'INVALID_RESPONSE');
+  }
+
+  if (!isAdminGitHubLogin(user.login)) {
+    throw new GitHubApiError(
+      `Only @${ADMIN_GITHUB_LOGIN} can unlock ryP0 Developer Mode on this device.`,
+      403,
+      'INSUFFICIENT_PERMISSION',
+    );
+  }
+
+  const repositoryPath = `/repos/${encodeURIComponent(GITHUB_REPOSITORY.owner)}/${encodeURIComponent(GITHUB_REPOSITORY.name)}`;
+  const repository = await githubRequest<GitHubRepositoryResponse>(repositoryPath, normalizedToken);
+
+  if (!repository.permissions?.push && !repository.permissions?.maintain && !repository.permissions?.admin) {
+    throw new GitHubApiError(
+      `@${user.login} does not have write access to ${GITHUB_REPOSITORY.owner}/${GITHUB_REPOSITORY.name}.`,
+      403,
+      'INSUFFICIENT_PERMISSION',
+    );
+  }
+
+  return {
+    id: user.id,
+    login: user.login,
+    avatarUrl: user.avatar_url,
+  };
+}
+
+export async function fetchRepositorySnapshot(token?: string): Promise<RepositorySnapshot> {
+  const path = `/repos/${encodeURIComponent(GITHUB_REPOSITORY.owner)}/${encodeURIComponent(GITHUB_REPOSITORY.name)}/contents/${encodePath(GITHUB_REPOSITORY.repoPath)}?ref=${encodeURIComponent(GITHUB_REPOSITORY.branch)}`;
+  const file = await githubRequest<GitHubContentResponse>(path, token);
+
+  if (file.type !== 'file' || !isNonEmptyString(file.sha) || file.encoding !== 'base64' || !isNonEmptyString(file.content)) {
+    throw new GitHubApiError('GitHub did not return repo.json as a readable file.', 0, 'INVALID_RESPONSE');
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(base64ToUtf8(file.content));
+  } catch {
+    throw new GitHubApiError('repo.json contains invalid JSON.', 0, 'INVALID_RESPONSE');
+  }
+
+  assertValidRepositoryData(parsed);
+  return { data: parsed, sha: file.sha };
+}
+
+export async function updateRepositoryFile(
+  token: string,
+  data: RepoData,
+  expectedSha: string,
+): Promise<RepositoryUpdateResult> {
+  if (!isNonEmptyString(expectedSha)) {
+    throw new GitHubApiError('Refresh the repository before committing changes.', 0, 'CONFLICT');
+  }
+
+  assertValidRepositoryData(data);
+  const path = `/repos/${encodeURIComponent(GITHUB_REPOSITORY.owner)}/${encodeURIComponent(GITHUB_REPOSITORY.name)}/contents/${encodePath(GITHUB_REPOSITORY.repoPath)}`;
+  const response = await githubRequest<GitHubUpdateResponse>(path, token, {
+    method: 'PUT',
+    body: JSON.stringify({
+      message: 'Update repo.json via ryP0 CMS',
+      content: utf8ToBase64(`${JSON.stringify(data, null, 2)}\n`),
+      sha: expectedSha,
+      branch: GITHUB_REPOSITORY.branch,
+    }),
+  });
+  const contentSha = response.content?.sha;
+
+  if (!isNonEmptyString(contentSha)) {
+    throw new GitHubApiError('GitHub accepted the update but did not return the new file SHA.', 0, 'INVALID_RESPONSE');
+  }
+
+  return {
+    contentSha,
+    commitSha: response.commit?.sha,
+  };
+}
+
+export async function fetchRepositoryIcons(token?: string): Promise<GitHubContentResponse[]> {
+  const path = `/repos/${encodeURIComponent(GITHUB_REPOSITORY.owner)}/${encodeURIComponent(GITHUB_REPOSITORY.name)}/contents/${encodePath(GITHUB_REPOSITORY.iconsPath)}?ref=${encodeURIComponent(GITHUB_REPOSITORY.branch)}`;
+  const payload = await githubRequest<unknown>(path, token);
+
+  if (!Array.isArray(payload)) {
+    throw new GitHubApiError('GitHub returned an invalid icons directory response.', 0, 'INVALID_RESPONSE');
+  }
+
+  return payload.filter((item): item is GitHubContentResponse => (
+    isRecord(item) &&
+    item.type === 'file' &&
+    isNonEmptyString(item.name) &&
+    isNonEmptyString(item.path) &&
+    isNonEmptyString(item.sha) &&
+    typeof item.size === 'number' &&
+    isNonEmptyString(item.url) &&
+    isNonEmptyString(item.html_url) &&
+    isNonEmptyString(item.git_url)
+  ));
+}
+
+export async function uploadRepositoryIcon(
+  token: string,
+  base64Data: string,
+  filename: string,
+): Promise<string> {
+  const safeFilename = filename.trim().replace(/[^a-zA-Z0-9._-]/g, '-');
+  if (!safeFilename || safeFilename === '.' || safeFilename === '..') {
+    throw new GitHubApiError('Choose a valid icon filename.', 0, 'REQUEST_FAILED');
+  }
+
+  const relativePath = `${GITHUB_REPOSITORY.iconsPath}/${safeFilename}`;
+  const path = `/repos/${encodeURIComponent(GITHUB_REPOSITORY.owner)}/${encodeURIComponent(GITHUB_REPOSITORY.name)}/contents/${encodePath(relativePath)}`;
+  const response = await githubRequest<GitHubUpdateResponse & { content?: GitHubContentResponse | null }>(path, token, {
+    method: 'PUT',
+    body: JSON.stringify({
+      message: `Upload icon: ${safeFilename}`,
+      content: base64Data.replace(/^data:[^;]+;base64,/, ''),
+      branch: GITHUB_REPOSITORY.branch,
+    }),
+  });
+
+  const downloadUrl = response.content?.download_url;
+  if (!isNonEmptyString(downloadUrl)) {
+    throw new GitHubApiError('GitHub accepted the icon but did not return its URL.', 0, 'INVALID_RESPONSE');
+  }
+
+  return downloadUrl;
+}
+
+export function githubErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : 'An unexpected GitHub error occurred.';
+}

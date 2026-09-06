@@ -6,32 +6,33 @@ import {
   ActivityIndicator,
   Alert,
   StyleSheet,
-  ScrollView,
   Platform,
-  FlatList,
+  useColorScheme,
 } from 'react-native';
 import DraggableFlatList, { RenderItemParams } from 'react-native-draggable-flatlist';
 import Animated, { useAnimatedScrollHandler } from 'react-native-reanimated';
 import { useRouter, Stack } from 'expo-router';
-import { useRepoStore } from '../../store/useRepoStore';
-import { isScrollingDown, scrollY } from '../../store/sharedScroll';
-import { AppCard } from '../../components/AppCard';
-import { RepoApp } from '../../types/repo';
-import { Plus, RotateCw, Save, Inbox, RefreshCw, HardDrive, Repeat } from 'lucide-react-native';
+import { useRepoStore } from '../../../store/useRepoStore';
+import { isScrollingDown, scrollY } from '../../../store/sharedScroll';
+import { AppCard } from '../../../components/AppCard';
+import AppCategoryTabs from '../../../components/app-category-tabs';
+import { RepoApp } from '../../../types/repo';
+import { Inbox } from 'lucide-react-native';
 import { SymbolView } from 'expo-symbols';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { ACCENT_COLORS, useAppTheme } from '../../../theme/app-preferences';
 
 const CATEGORIES = [
-  { id: 'all', label: 'Sideloading' },
+  { id: 'all', label: 'All Apps' },
+  { id: 'sideloading', label: 'Sideloading' },
   { id: 'games', label: 'Games' },
-  { id: 'social', label: 'Soci...' },
+  { id: 'social', label: 'Social' },
   { id: 'emu', label: 'EMU' },
   { id: 'movies', label: 'Movies' },
+  { id: 'tools', label: 'Tools' },
 ];
 
 export default function HomeScreen() {
   const router = useRouter();
-  const insets = useSafeAreaInsets();
   const {
     repo,
     isLoading,
@@ -39,13 +40,28 @@ export default function HomeScreen() {
     fetchRepo,
     reorderApps,
     commitChanges,
-    githubToken,
     isDeveloperMode,
     initializeStore,
     searchQuery,
+    accentColor,
   } = useRepoStore();
+  const theme = useAppTheme();
+  const colorScheme = useColorScheme();
+  const toolbarThemeKey = colorScheme === 'dark' ? 'dark' : 'light';
 
   const [selectedCategory, setSelectedCategory] = useState('all');
+
+  const commitAfterChange = useCallback(async (successMessage?: string) => {
+    try {
+      await commitChanges();
+      if (successMessage) Alert.alert('Saved to GitHub', successMessage);
+    } catch (error: any) {
+      Alert.alert(
+        'Could Not Save to GitHub',
+        error?.message || 'The change has not been committed. Refresh the repository before retrying.',
+      );
+    }
+  }, [commitChanges]);
 
   const scrollHandler = useAnimatedScrollHandler({
     onScroll: (event) => {
@@ -69,7 +85,7 @@ export default function HomeScreen() {
   }, []);
 
   const handleCommit = async () => {
-    if (!githubToken) {
+    if (!isDeveloperMode) {
       Alert.alert('Authentication Required', 'Please configure your GitHub PAT in Settings to commit changes.', [
         { text: 'Settings', onPress: () => router.push('/(tabs)/settings') },
         { text: 'Cancel', style: 'cancel' }
@@ -91,10 +107,21 @@ export default function HomeScreen() {
     const name = (app.name || '').toLowerCase();
     const desc = (app.subtitle || app.localizedDescription || '').toLowerCase();
 
+    if (catId === 'sideloading') {
+      return cat.includes('sideload') || cat.includes('sign') ||
+        name.includes('sidestore') || name.includes('altstore') || name.includes('scarlet') ||
+        name.includes('esign') || name.includes('feather') || name.includes('livecontainer') ||
+        desc.includes('sideload') || desc.includes('sign ipa');
+    }
     if (catId === 'games') return cat.includes('game') || name.includes('craft') || name.includes('amethyst') || name.includes('game') || desc.includes('game') || desc.includes('minecraft');
     if (catId === 'emu') return cat.includes('emu') || name.includes('dolphin') || name.includes('melon') || name.includes('ppsspp') || name.includes('psx') || name.includes('retro') || desc.includes('emulator');
-    if (catId === 'social') return cat.includes('social') || name.includes('enswilde') || name.includes('3105') || desc.includes('social') || desc.includes('tool');
+    if (catId === 'social') return cat.includes('social') || name.includes('enswilde') || name.includes('3105') || desc.includes('social');
     if (catId === 'movies') return cat.includes('movie') || cat.includes('video') || cat.includes('media') || name.includes('movie') || desc.includes('stream') || desc.includes('video');
+    if (catId === 'tools') {
+      return cat.includes('tool') || cat.includes('utility') ||
+        name.includes('filza') || name.includes('trollstore') || name.includes('cowabunga') ||
+        name.includes('misaka') || name.includes('nugget') || desc.includes('utility') || desc.includes('tool');
+    }
 
     return cat.includes(catId);
   }, []);
@@ -113,15 +140,31 @@ export default function HomeScreen() {
     });
   }, [repo?.apps, selectedCategory, searchQuery, matchesCategory]);
 
+  // Preserve a card's identity and fallback color when the filtered list changes.
+  // This lets FlatList recycle unchanged rows instead of re-rendering them by position.
+  const appIndexByBundle = useMemo(
+    () => new Map(repo?.apps?.map((app, index) => [app.bundleIdentifier, index])),
+    [repo?.apps]
+  );
+
+  const handleCategorySelect = useCallback((category: string) => {
+    if (category === selectedCategory) return;
+    setSelectedCategory(category);
+  }, [selectedCategory]);
+
   const renderDraggableItem = useCallback(
     ({ item, drag, isActive, getIndex }: RenderItemParams<RepoApp>) => {
       const index = getIndex() ?? 0;
       return (
         <AppCard
           app={item}
-          drag={drag}
+          drag={selectedCategory === 'all' ? drag : () => {}}
           isActive={isActive}
-          index={index}
+          index={appIndexByBundle.get(item.bundleIdentifier) ?? index}
+          onOpen={() => router.push({
+            pathname: '/(tabs)/(apps)/[bundleIdentifier]',
+            params: { bundleIdentifier: item.bundleIdentifier },
+          })}
           onEdit={() => router.push({ pathname: '/edit', params: { bundleIdentifier: item.bundleIdentifier } })}
           onDuplicate={() => {
             if (repo) {
@@ -129,18 +172,26 @@ export default function HomeScreen() {
               newApp.bundleIdentifier = `${newApp.bundleIdentifier}.copy`;
               newApp.name = `${newApp.name} (Copy)`;
               useRepoStore.getState().duplicateApp(item.bundleIdentifier, newApp);
+              void commitAfterChange(`${newApp.name} was added to repo.json.`);
             }
           }}
           onDelete={() => {
             Alert.alert('Delete App', `Are you sure you want to delete ${item.name}?`, [
               { text: 'Cancel', style: 'cancel' },
-              { text: 'Delete', style: 'destructive', onPress: () => useRepoStore.getState().deleteApp(item.bundleIdentifier) },
+              {
+                text: 'Delete',
+                style: 'destructive',
+                onPress: () => {
+                  useRepoStore.getState().deleteApp(item.bundleIdentifier);
+                  void commitAfterChange(`${item.name} was removed from repo.json.`);
+                },
+              },
             ]);
           }}
         />
       );
     },
-    [repo]
+    [appIndexByBundle, commitAfterChange, repo, router, selectedCategory]
   );
 
   const renderPlainItem = useCallback(
@@ -148,80 +199,40 @@ export default function HomeScreen() {
       return (
         <AppCard
           app={item}
-          drag={() => { }}
+          drag={() => {}}
           isActive={false}
-          index={index}
+          index={appIndexByBundle.get(item.bundleIdentifier) ?? index}
+          onOpen={() => router.push({
+            pathname: '/(tabs)/(apps)/[bundleIdentifier]',
+            params: { bundleIdentifier: item.bundleIdentifier },
+          })}
           onEdit={() => router.push({ pathname: '/edit', params: { bundleIdentifier: item.bundleIdentifier } })}
-          onDuplicate={() => { }}
-          onDelete={() => { }}
+          onDuplicate={() => {}}
+          onDelete={() => {}}
         />
       );
     },
-    []
+    [appIndexByBundle, router]
   );
 
-  const currentCategoryLabel = CATEGORIES.find(c => c.id === selectedCategory)?.label || 'All';
+  const currentCategoryLabel = CATEGORIES.find(c => c.id === selectedCategory)?.label || 'All Apps';
 
-  const ListHeader = () => (
-    <View style={[styles.topHeaderContainer, { paddingTop: insets.top > 0 ? insets.top + 8 : 16 }]}>
-      {/* Top Title & Actions Row */}
-      <View style={styles.topTitleRow}>
-        <View style={styles.titleColumn}>
-          <Text style={styles.mainTitle}>ryP0</Text>
-          <Text style={styles.subTitle}>ULTIMATE SOURSE</Text>
-        </View>
-
-        {/* Right Floating Actions Capsule */}
-        <View style={styles.actionCapsule}>
-          <TouchableOpacity
-            activeOpacity={0.7}
-            onPress={() => fetchRepo()}
-            style={styles.actionBtn}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-          >
-            <RotateCw size={19} color="#111827" strokeWidth={2.4} />
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            activeOpacity={0.7}
-            onPress={() => fetchRepo()}
-            style={styles.actionBtn}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-          >
-            <Repeat size={19} color="#111827" strokeWidth={2.4} />
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            activeOpacity={0.7}
-            onPress={handleCommit}
-            style={styles.actionBtn}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-          >
-            <HardDrive size={19} color="#111827" strokeWidth={2.4} />
-          </TouchableOpacity>
-        </View>
-      </View>
-
-      {/* Categories Horizontal Capsule */}
-      <View style={styles.categoriesCapsule}>
-        {CATEGORIES.map(cat => {
-          const isSelected = selectedCategory === cat.id;
-          return (
-            <TouchableOpacity
-              key={cat.id}
-              activeOpacity={0.7}
-              onPress={() => setSelectedCategory(cat.id)}
-              style={[styles.categoryItem, isSelected && styles.activeCategoryItem]}
-            >
-              <Text style={[styles.categoryText, isSelected && styles.activeCategoryText]}>
-                {cat.label}
-              </Text>
-            </TouchableOpacity>
-          );
-        })}
-      </View>
+  const categoryTabs = useMemo(() => (
+    <View>
+      <AppCategoryTabs
+        categories={CATEGORIES}
+        selectedCategory={selectedCategory}
+        onSelectCategory={handleCategorySelect}
+        accentColor={ACCENT_COLORS[accentColor].value}
+      />
+      <Text
+        selectable
+        style={[styles.categoryCount, { color: theme.secondaryLabel }]}
+      >
+        {filteredApps.length} {filteredApps.length === 1 ? 'app' : 'apps'}
+      </Text>
     </View>
-  );
+  ), [accentColor, filteredApps.length, handleCategorySelect, selectedCategory, theme.secondaryLabel]);
 
   const ListEmpty = () => {
     if (isLoading && !repo) {
@@ -255,7 +266,7 @@ export default function HomeScreen() {
             ? 'Tap "+" in the bottom bar to add or upload an application to this category.'
             : 'There are currently no applications hosted under this category.'}
         </Text>
-        <TouchableOpacity onPress={() => setSelectedCategory('all')} style={styles.showAllBtn} activeOpacity={0.8}>
+        <TouchableOpacity onPress={() => handleCategorySelect('all')} style={styles.showAllBtn} activeOpacity={0.8}>
           <Text style={styles.showAllBtnText}>Show All Apps ({repo?.apps?.length || 0})</Text>
         </TouchableOpacity>
       </View>
@@ -263,130 +274,70 @@ export default function HomeScreen() {
   };
 
   return (
-    <View style={styles.container}>
-      {selectedCategory === 'all' && isDeveloperMode ? (
+    <>
+      {isDeveloperMode ? (
         <DraggableFlatList
+          containerStyle={[styles.list, { backgroundColor: theme.background }]}
           data={filteredApps}
-          onDragEnd={({ data }) => reorderApps(data)}
+          onDragEnd={({ data }) => {
+            reorderApps(data);
+            void commitAfterChange('The app order was saved to repo.json.');
+          }}
           keyExtractor={item => item.bundleIdentifier}
           renderItem={renderDraggableItem}
-          ListHeaderComponent={ListHeader}
+          ListHeaderComponent={categoryTabs}
           ListEmptyComponent={ListEmpty}
           contentContainerStyle={styles.listContent}
           showsVerticalScrollIndicator={false}
-          contentInsetAdjustmentBehavior="never"
+          contentInsetAdjustmentBehavior="automatic"
           onScroll={scrollHandler}
           scrollEventThrottle={16}
         />
       ) : (
         <Animated.FlatList
+          style={[styles.list, { backgroundColor: theme.background }]}
           data={filteredApps}
           keyExtractor={(item: RepoApp) => item.bundleIdentifier}
           renderItem={renderPlainItem}
-          ListHeaderComponent={ListHeader}
+          ListHeaderComponent={categoryTabs}
           ListEmptyComponent={ListEmpty}
           contentContainerStyle={styles.listContent}
           showsVerticalScrollIndicator={false}
-          contentInsetAdjustmentBehavior="never"
+          contentInsetAdjustmentBehavior="automatic"
           onScroll={scrollHandler}
           scrollEventThrottle={16}
         />
       )}
-    </View>
+      <Stack.Toolbar key={`refresh-${toolbarThemeKey}`} placement="left">
+        <Stack.Toolbar.Button
+          accessibilityLabel="Refresh repository"
+          icon="arrow.clockwise"
+          onPress={fetchRepo}
+        />
+      </Stack.Toolbar>
+      <Stack.Toolbar key={`actions-${toolbarThemeKey}`} placement="right">
+        <Stack.Toolbar.Button icon="arrow.triangle.2.circlepath" onPress={fetchRepo} />
+        <Stack.Toolbar.Button icon="externaldrive" onPress={handleCommit} />
+      </Stack.Toolbar>
+    </>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  list: {
     flex: 1,
     backgroundColor: '#F2F2F7',
   },
-  topHeaderContainer: {
-    paddingHorizontal: 16,
-    paddingBottom: 14,
-  },
-  topTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  titleColumn: {
-    justifyContent: 'center',
-  },
-  mainTitle: {
-    fontFamily: Platform.OS === 'ios' ? 'SF Pro' : 'System',
-    fontSize: 34,
-    fontWeight: '800',
-    color: '#111827',
-    letterSpacing: -0.5,
-  },
-  subTitle: {
-    fontFamily: Platform.OS === 'ios' ? 'SF Pro' : 'System',
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#8E8E93',
-    letterSpacing: 0.8,
-    marginTop: 2,
-  },
-  actionCapsule: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.92)',
-    borderRadius: 24,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    gap: 16,
-    borderWidth: 0.5,
-    borderColor: 'rgba(255, 255, 255, 0.8)',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    elevation: 4,
-  },
-  actionBtn: {
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  categoriesCapsule: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: 'rgba(255, 255, 255, 0.92)',
-    borderRadius: 24,
-    padding: 3,
-    marginTop: 16,
-    borderWidth: 0.5,
-    borderColor: 'rgba(255, 255, 255, 0.8)',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    elevation: 4,
-  },
-  categoryItem: {
-    paddingHorizontal: 10,
-    height: 34,
-    borderRadius: 17,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  activeCategoryItem: {
-    backgroundColor: 'rgba(0, 136, 255, 0.12)',
-    paddingHorizontal: 12,
-  },
-  categoryText: {
-    fontFamily: Platform.OS === 'ios' ? 'SF Pro' : 'System',
-    fontSize: 12.5,
-    fontWeight: '500',
-    color: '#1A1A1A',
-  },
-  activeCategoryText: {
-    color: '#0088FF',
-    fontWeight: '700',
-  },
   listContent: {
     paddingBottom: 110,
+  },
+  categoryCount: {
+    marginLeft: 16,
+    marginTop: -4,
+    marginBottom: 10,
+    fontSize: 17,
+    fontWeight: '800',
+    fontVariant: ['tabular-nums'],
   },
   emptyContainer: {
     alignItems: 'center',

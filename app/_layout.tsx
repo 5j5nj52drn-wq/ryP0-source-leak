@@ -1,16 +1,46 @@
-import { Stack } from 'expo-router';
+import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from 'expo-router';
+import { useColorScheme } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { Host } from '@expo/ui';
 import '../global.css';
 
 export default function RootLayout() {
+  const colorScheme = useColorScheme();
+
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <Stack initialRouteName="(tabs)" screenOptions={{ headerShown: false }}>
-        <Stack.Screen name="(tabs)" />
-        <Stack.Screen name="edit" options={{ presentation: 'formSheet' }} />
-        <Stack.Screen name="add" options={{ presentation: 'formSheet' }} />
-      </Stack>
+      <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
+        <Stack initialRouteName="(tabs)" screenOptions={{ headerShown: false }}>
+          <Stack.Screen name="(tabs)" />
+          <Stack.Screen
+            name="edit"
+            options={{
+              headerShown: true,
+              presentation: 'formSheet',
+              sheetAllowedDetents: [1],
+              sheetGrabberVisible: true,
+            }}
+          />
+          <Stack.Screen name="add" options={{ presentation: 'formSheet' }} />
+          <Stack.Screen
+            name="workflows"
+            options={{
+              headerShown: true,
+              presentation: 'formSheet',
+              sheetAllowedDetents: [1],
+              sheetGrabberVisible: true,
+            }}
+          />
+          <Stack.Screen
+            name="requests"
+            options={{
+              headerShown: true,
+              presentation: 'formSheet',
+              sheetAllowedDetents: [1],
+              sheetGrabberVisible: true,
+            }}
+          />
+        </Stack>
+      </ThemeProvider>
     </GestureHandlerRootView>
   );
 }

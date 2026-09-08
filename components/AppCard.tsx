@@ -18,6 +18,7 @@ import { useRepoStore } from '../store/useRepoStore';
 import { getAppCardTheme } from './app-card-theme';
 import AppCardContextMenu, { type AppCardContextMenuAction } from './app-card-context-menu';
 import { installInLiveContainer } from '../services/livecontainer';
+import AppStatusBadges from './app-status-badges';
 
 interface AppCardProps {
   app: RepoApp;
@@ -80,6 +81,8 @@ function CardVisual({
           <Text style={styles.subtitle} numberOfLines={1}>{subtitle}</Text>
         </View>
       </View>
+
+      <View style={styles.statusRow}><AppStatusBadges app={app} /></View>
 
       {preview ? (
         <View style={styles.previewInstallButton}>
@@ -384,17 +387,18 @@ export const AppCard = React.memo(AppCardComponent, (previous, next) => (
 const styles = StyleSheet.create({
   cardWrapper: { width: '100%', paddingHorizontal: 16, marginBottom: 12 },
   cardContainer: {
-    position: 'relative', width: '100%', height: 88, borderRadius: 16,
+    position: 'relative', width: '100%', height: 116, borderRadius: 16,
   },
-  cardVisualContainer: { width: '100%', height: 88, borderRadius: 16 },
+  cardVisualContainer: { width: '100%', height: 116, borderRadius: 16 },
   cardSurface: {
-    position: 'relative', width: '100%', height: 88, borderRadius: 16, overflow: 'hidden',
+    position: 'relative', width: '100%', height: 116, borderRadius: 16, overflow: 'hidden',
     shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.15,
     shadowRadius: 10, elevation: 4,
   },
   previewSurface: { shadowOpacity: 0.22, shadowRadius: 16, elevation: 8 },
   cardContextMenu: { ...StyleSheet.absoluteFill, zIndex: 1 },
-  cardTapTarget: { width: '100%', height: 88, borderRadius: 16 },
+  cardTapTarget: { width: '100%', height: 116, borderRadius: 16 },
+  statusRow: { paddingHorizontal: 12, height: 24 },
   cardContent: { width: '100%', flexDirection: 'row', alignItems: 'center', height: 88, padding: 12, overflow: 'hidden' },
   activeCard: { transform: [{ scale: 1.03 }], zIndex: 999 },
   dragPill: { paddingVertical: 8, paddingRight: 6, justifyContent: 'center', alignItems: 'center' },

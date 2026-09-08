@@ -1,4 +1,5 @@
 import { fetch } from 'expo/fetch';
+import * as Crypto from 'expo-crypto';
 import { getStoredGitHubToken } from './secure-credentials';
 import type { AppRequestMethod, AppRequestRecord, AppRequestSubmission } from '../types/app-request';
 
@@ -25,22 +26,18 @@ type GitHubIssue = {
   pull_request?: unknown;
 };
 
-export type AppRequestSubmissionResult =
-  | { kind: 'submitted'; request: AppRequestRecord }
-  | { kind: 'continue-in-github'; url: string };
+export type AppRequestSubmissionResult = { kind: 'submitted'; request: AppRequestRecord };
 
-const GITHUB_ISSUE_FORM_URL = `https://github.com/${REQUEST_OWNER}/${REQUEST_REPOSITORY}/issues/new`;
-
-const REQUEST_METHOD_LABELS: Record<AppRequestMethod, string> = {
-  'updatable-source': 'Updatable source',
-  'direct-ipa': 'Direct IPA download',
-  'message-link': 'Message / Telegram link',
-};
-
-function endpoint(): string | null {
+function endpoint(): string {
+  // This deliberately has no guessed public fallback. A stale or unclaimed
+  // hostname makes requests silently disappear (or send them to the wrong
+  // service) on a real device. The deployed HTTPS endpoint is public build
+  // configuration and must be supplied when an IPA is built.
   const baseUrl = process.env.EXPO_PUBLIC_REQUESTS_API_URL?.trim().replace(/\/$/, '');
   if (!baseUrl) {
-    return null;
+    throw new AppRequestsError(
+      'App requests are temporarily unavailable because the request service has not been deployed yet.',
+    );
   }
 
   let url: URL;
@@ -54,18 +51,8 @@ function endpoint(): string | null {
   if (url.protocol !== 'https:' && !(isLocalDevelopmentHost && __DEV__)) {
     throw new AppRequestsError('App requests must use a secure HTTPS endpoint.');
   }
-  return `${url.toString().replace(/\/$/, '')}/api/app-requests`;
-}
-
-function githubIssueFormUrl(submission: AppRequestSubmission): string {
-  const url = new URL(GITHUB_ISSUE_FORM_URL);
-  url.searchParams.set('template', 'app-request.yml');
-  url.searchParams.set('name', submission.name);
-  url.searchParams.set('description', submission.description);
-  url.searchParams.set('category', submission.category);
-  url.searchParams.set('source_url', submission.sourceUrl);
-  url.searchParams.set('method', REQUEST_METHOD_LABELS[submission.method]);
-  return url.toString();
+  const normalized = url.toString().replace(/\/$/, '');
+  return normalized.endsWith('/api/app-requests') ? normalized : `${normalized}/api/app-requests`;
 }
 
 async function request<T>(endpointUrl: string, init?: RequestInit): Promise<T> {
@@ -170,16 +157,23 @@ async function fetchDeveloperInbox(token: string): Promise<AppRequestRecord[]> {
 
 export async function submitAppRequest(submission: AppRequestSubmission): Promise<AppRequestSubmissionResult> {
   const endpointUrl = endpoint();
-  if (!endpointUrl) {
-    // A reader must never supply the app with a GitHub token. When a hosted
-    // endpoint has not been deployed yet, GitHub owns the sign-in and submit
-    // step through the repository's public issue form instead.
-    return { kind: 'continue-in-github', url: githubIssueFormUrl(submission) };
-  }
-
+  const normalizedForIdempotency = JSON.stringify({
+    ...submission,
+    name: submission.name.trim(),
+    description: submission.description.trim(),
+    category: submission.category.trim(),
+    sourceUrl: submission.sourceUrl.trim(),
+  });
+  const requestKey = await Crypto.digestStringAsync(
+    Crypto.CryptoDigestAlgorithm.SHA256,
+    normalizedForIdempotency,
+  );
   const payload = await request<{ request: AppRequestRecord }>(endpointUrl, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'Idempotency-Key': requestKey,
+    },
     body: JSON.stringify(submission),
   });
   if (!payload?.request || typeof payload.request.id !== 'number') {

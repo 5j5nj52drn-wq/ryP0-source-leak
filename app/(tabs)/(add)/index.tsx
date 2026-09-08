@@ -11,7 +11,6 @@ import {
   View,
   type TextInputProps,
 } from 'react-native';
-import { BottomSheet, Host } from '@expo/ui';
 import { Image } from 'expo-image';
 import { Stack, useRouter } from 'expo-router';
 import { useRepoStore } from '../../../store/useRepoStore';
@@ -29,6 +28,11 @@ import {
 import { ACCENT_COLORS, useAppTheme } from '../../../theme/app-preferences';
 import AppCategoryTabs from '../../../components/app-category-tabs';
 import AppRequestForm from '../../../components/app-request-form';
+import IpaUploader from '../../../components/ipa-uploader';
+import RepositoryImportReview, {
+  type StagedRepositoryApp,
+} from '../../../components/repository-import-review';
+import type { IpaUploadResult } from '../../../services/ipa-upload';
 
 const WORKSPACE_TABS = [
   { id: 'add', label: 'Add Apps' },
@@ -56,10 +60,22 @@ type WorkspaceTab = (typeof WORKSPACE_TABS)[number]['id'];
 type ImportMethod = (typeof IMPORT_METHODS)[number]['id'];
 type IconTarget = 'direct' | 'github' | 'telegram';
 type Theme = ReturnType<typeof useAppTheme>;
-type StagedRepositoryApp = { app: RepoApp; selected: boolean; category: string };
 
 function makeSlug(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 80) || 'app';
+}
+
+// Direct files do not reliably expose a bundle identifier until a server-side
+// IPA inspection step exists. Make the temporary repository identifier stable
+// per URL so two differently hosted apps with the same display name cannot
+// collide, while re-adding the exact same URL still selects the same record.
+function directLinkIdentifier(value: string) {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16);
 }
 
 function today() {
@@ -69,6 +85,14 @@ function today() {
 function normalizedCategory(value?: string) {
   const match = CATEGORIES.find((category) => category.id.toLowerCase() === value?.trim().toLowerCase());
   return match?.id || 'Sideloading';
+}
+
+function prepareNewImport(app: RepoApp): RepoApp {
+  return {
+    ...app,
+    updatePolicy: 'static',
+    status: { state: 'unknown' },
+  };
 }
 
 function recommendationFor(request: AppRequestRecord): { method: ImportMethod; label: string; detail: string } {
@@ -181,6 +205,8 @@ export default function AddAppTabScreen() {
   const [directDescription, setDirectDescription] = useState('');
   const [directIconUrl, setDirectIconUrl] = useState('');
   const [directCategory, setDirectCategory] = useState('Sideloading');
+  const [directUploadSize, setDirectUploadSize] = useState(0);
+  const [directUploaderGeneration, setDirectUploaderGeneration] = useState(0);
 
   const [githubRepository, setGithubRepository] = useState('');
   const [githubName, setGithubName] = useState('');
@@ -189,10 +215,8 @@ export default function AddAppTabScreen() {
   const [githubCategory, setGithubCategory] = useState('Sideloading');
 
   const [repoUrl, setRepoUrl] = useState('');
-  const [repoSearch, setRepoSearch] = useState('');
   const [stagedApps, setStagedApps] = useState<StagedRepositoryApp[]>([]);
   const [isReviewSheetPresented, setIsReviewSheetPresented] = useState(false);
-  const [categoryPickerBundleId, setCategoryPickerBundleId] = useState<string | null>(null);
 
   const [telegramName, setTelegramName] = useState('');
   const [telegramDescription, setTelegramDescription] = useState('');
@@ -214,21 +238,6 @@ export default function AddAppTabScreen() {
     }
     return counts;
   }, [repo?.apps]);
-
-  const matchingStagedApps = useMemo(() => {
-    const search = repoSearch.trim().toLowerCase();
-    if (!search) return stagedApps;
-    return stagedApps.filter(({ app }) => (
-      app.name.toLowerCase().includes(search) ||
-      app.bundleIdentifier.toLowerCase().includes(search) ||
-      app.developerName.toLowerCase().includes(search)
-    ));
-  }, [repoSearch, stagedApps]);
-
-  const selectedStagedCount = useMemo(
-    () => stagedApps.filter((item) => item.selected).length,
-    [stagedApps],
-  );
 
   useEffect(() => {
     if (!pendingIconSelection || !iconTarget) return;
@@ -275,8 +284,26 @@ export default function AddAppTabScreen() {
       Alert.alert('Already Added', app.name + ' already exists in repo.json. Edit the existing app instead of duplicating it.');
       return false;
     }
-    return persistApps([app, ...repo.apps], title, app.name + ' was committed to repo.json.');
+    const importedApp = prepareNewImport(app);
+    return persistApps([importedApp, ...repo.apps], title, app.name + ' was committed to repo.json.');
   }, [persistApps, repo]);
+
+  const handleIpaUploaded = useCallback((result: IpaUploadResult) => {
+    setDirectUrl(result.browserDownloadUrl);
+    setDirectUploadSize(result.size);
+    setDirectName((current) => {
+      if (current.trim()) return current;
+      return result.originalFilename
+        .replace(/\.ipa$/i, '')
+        .replace(/[-_]+/g, ' ')
+        .trim();
+    });
+  }, []);
+
+  const handleDirectUrlChange = useCallback((value: string) => {
+    setDirectUrl(value);
+    setDirectUploadSize(0);
+  }, []);
 
   const handleAddDirect = useCallback(async () => {
     try {
@@ -287,13 +314,15 @@ export default function AddAppTabScreen() {
       const description = directDescription.trim() || 'Imported from a verified direct IPA link.';
       const app: RepoApp = {
         name,
-        bundleIdentifier: ['com', 'ryp0', 'direct', makeSlug(name)].join('.'),
+        bundleIdentifier: ['com', 'ryp0', 'direct', makeSlug(name), directLinkIdentifier(downloadURL)].join('.'),
         developerName: 'Direct Import',
         subtitle: description,
         localizedDescription: description,
         iconURL,
         category: directCategory,
-        versions: [{ version: '1.0.0', date: today(), downloadURL, size: 0 }],
+        updatePolicy: 'static',
+        status: { state: 'unknown' },
+        versions: [{ version: '1.0.0', date: today(), downloadURL, size: directUploadSize }],
       };
       const saved = await saveOneApp(app, 'Direct IPA Added');
       if (saved) {
@@ -301,11 +330,13 @@ export default function AddAppTabScreen() {
         setDirectName('');
         setDirectDescription('');
         setDirectIconUrl('');
+        setDirectUploadSize(0);
+        setDirectUploaderGeneration((generation) => generation + 1);
       }
     } catch (error: any) {
       Alert.alert('Could Not Add Direct IPA', error instanceof ImportSourceError ? error.message : 'Check the IPA and icon URLs.');
     }
-  }, [directCategory, directDescription, directIconUrl, directName, directUrl, saveOneApp]);
+  }, [directCategory, directDescription, directIconUrl, directName, directUploadSize, directUrl, saveOneApp]);
 
   const handleAddGithub = useCallback(async () => {
     setIsSaving(true);
@@ -343,11 +374,10 @@ export default function AddAppTabScreen() {
         return;
       }
       setStagedApps(newApps.map((app) => ({
-        app,
+        app: prepareNewImport(app),
         selected: true,
         category: normalizedCategory(app.category),
       })));
-      setRepoSearch('');
       setIsReviewSheetPresented(true);
     } catch (error: any) {
       Alert.alert('Repo Extraction Failed', error?.message || 'Could not safely read this repo.json.');
@@ -362,15 +392,25 @@ export default function AddAppTabScreen() {
     )));
   }, []);
 
-  const chooseStagedCategory = useCallback((bundleIdentifier: string) => {
-    setCategoryPickerBundleId((current) => current === bundleIdentifier ? null : bundleIdentifier);
+  const setStagedSelected = useCallback((bundleIdentifiers: readonly string[], selected: boolean) => {
+    const identifiers = new Set(bundleIdentifiers);
+    if (!identifiers.size) {
+      if (!selected) {
+        setStagedApps((items) => items.map((item) => item.selected ? { ...item, selected: false } : item));
+      }
+      return;
+    }
+    setStagedApps((items) => items.map((item) => (
+      identifiers.has(item.app.bundleIdentifier) && item.selected !== selected
+        ? { ...item, selected }
+        : item
+    )));
   }, []);
 
   const setStagedCategory = useCallback((bundleIdentifier: string, category: string) => {
     setStagedApps((items) => items.map((item) => (
       item.app.bundleIdentifier === bundleIdentifier ? { ...item, category } : item
     )));
-    setCategoryPickerBundleId(null);
   }, []);
 
   const handleMergeReviewedApps = useCallback(async () => {
@@ -380,7 +420,7 @@ export default function AddAppTabScreen() {
     }
     const selected = stagedApps
       .filter((item) => item.selected)
-      .map(({ app, category }) => ({ ...app, category }));
+      .map(({ app, category }) => prepareNewImport({ ...app, category }));
     if (!selected.length) {
       Alert.alert('Select an App', 'Choose at least one app to merge into repo.json.');
       return;
@@ -393,7 +433,6 @@ export default function AddAppTabScreen() {
     if (saved) {
       setIsReviewSheetPresented(false);
       setStagedApps([]);
-      setCategoryPickerBundleId(null);
       setRepoUrl('');
     }
   }, [persistApps, repo, stagedApps]);
@@ -483,6 +522,7 @@ export default function AddAppTabScreen() {
     setImportMethod(recommendation.method);
     if (recommendation.method === 'direct') {
       setDirectUrl(request.sourceUrl);
+      setDirectUploadSize(0);
       setDirectName(request.name);
       setDirectDescription(request.description);
       setDirectCategory(normalizedCategory(request.category));
@@ -555,8 +595,16 @@ export default function AddAppTabScreen() {
             />
 
             {importMethod === 'direct' ? (
-              <SectionCard title="Direct IPA" detail="Use a verified HTTPS .ipa download. Name, description, and icon are optional but improve the listing." theme={theme}>
-                <FormField theme={theme} label="IPA Download URL" placeholder="https://example.com/app.ipa" value={directUrl} onChangeText={setDirectUrl} autoCapitalize="none" keyboardType="url" />
+              <SectionCard title="Direct IPA" detail="Paste a verified HTTPS .ipa link, or choose a local IPA to upload as a public GitHub release asset. Nothing is added to repo.json until you commit below." theme={theme}>
+                <IpaUploader
+                  key={directUploaderGeneration}
+                  accentColor={accent}
+                  disabled={isSaving}
+                  labelColor={theme.label}
+                  secondaryLabelColor={theme.secondaryLabel}
+                  onUploaded={handleIpaUploaded}
+                />
+                <FormField theme={theme} label="IPA Download URL" placeholder="https://example.com/app.ipa" value={directUrl} onChangeText={handleDirectUrlChange} autoCapitalize="none" keyboardType="url" />
                 <FormField theme={theme} label="App Display Name (Optional)" placeholder="Automatically derived from the IPA filename" value={directName} onChangeText={setDirectName} />
                 <FormField theme={theme} label="Description (Optional)" placeholder="What does this app do?" value={directDescription} onChangeText={setDirectDescription} multiline />
                 <FormField theme={theme} label="Icon URL (Optional)" placeholder="https://…/icon.png" value={directIconUrl} onChangeText={setDirectIconUrl} autoCapitalize="none" keyboardType="url" />
@@ -568,7 +616,7 @@ export default function AddAppTabScreen() {
             ) : null}
 
             {importMethod === 'github' ? (
-              <SectionCard title="GitHub Release Fetcher" detail="The importer finds the latest IPA. If no icon is chosen, it looks for an icon/logo in the repo, then uses the owner avatar." theme={theme}>
+              <SectionCard title="GitHub Release Fetcher" detail="The importer finds the latest IPA. If no icon is chosen, it looks for an app icon or logo in the repository, then uses a neutral app placeholder." theme={theme}>
                 <FormField theme={theme} label="GitHub Repository" placeholder="owner/repository or https://github.com/owner/repository" value={githubRepository} onChangeText={setGithubRepository} autoCapitalize="none" />
                 <FormField theme={theme} label="Rename App (Optional)" placeholder="Keep the repository name" value={githubName} onChangeText={setGithubName} />
                 <FormField theme={theme} label="Description (Optional)" placeholder="Use the release or repository description" value={githubDescription} onChangeText={setGithubDescription} multiline />
@@ -584,6 +632,16 @@ export default function AddAppTabScreen() {
               <SectionCard title="Repository Extractor" detail="Extract a compatible repo.json, search every valid app, select the entries you want, and set a category for each one before anything is written." theme={theme}>
                 <FormField theme={theme} label="Repository JSON URL" placeholder="https://community.example/repo.json" value={repoUrl} onChangeText={setRepoUrl} autoCapitalize="none" keyboardType="url" />
                 {primaryButton('Extract & Review Apps', () => void handleExtractRepository())}
+                {stagedApps.length ? (
+                  <TouchableOpacity
+                    accessibilityRole="button"
+                    disabled={isSaving}
+                    onPress={() => setIsReviewSheetPresented(true)}
+                    style={[styles.secondaryButton, styles.reviewAgainButton, { borderColor: accent }]}
+                  >
+                    <Text style={[styles.secondaryButtonText, { color: accent }]}>Review {stagedApps.length} Extracted Apps</Text>
+                  </TouchableOpacity>
+                ) : null}
               </SectionCard>
             ) : null}
 
@@ -671,75 +729,19 @@ export default function AddAppTabScreen() {
         ) : null}
       </ScrollView>
 
-      {isReviewSheetPresented ? (
-      <Host style={styles.sheetHost}>
-        <BottomSheet isPresented onDismiss={() => setIsReviewSheetPresented(false)} snapPoints={['half', 'full']} contentPadding={0}>
-          <View style={[styles.reviewSheet, { backgroundColor: theme.background }]}>
-            <View style={styles.reviewHeader}>
-              <View style={styles.reviewHeaderText}>
-                <Text selectable style={[styles.reviewTitle, { color: theme.label }]}>Review Repository Apps</Text>
-                <Text selectable style={[styles.reviewSub, { color: theme.secondaryLabel }]}>
-                  {selectedStagedCount} selected of {stagedApps.length}. Tap a category to change it per app.
-                </Text>
-              </View>
-              <TouchableOpacity accessibilityRole="button" onPress={() => setIsReviewSheetPresented(false)} style={[styles.closeSheetButton, { borderColor: theme.separator }]}>
-                <Text style={[styles.closeSheetText, { color: theme.label }]}>Done</Text>
-              </TouchableOpacity>
-            </View>
-            <TextInput
-              accessibilityLabel="Search extracted repository apps"
-              style={[styles.reviewSearch, { backgroundColor: theme.input, color: theme.label, borderColor: theme.separator }]}
-              placeholder="Search name, bundle ID, or developer"
-              placeholderTextColor={theme.secondaryLabel}
-              value={repoSearch}
-              onChangeText={setRepoSearch}
-              autoCapitalize="none"
-            />
-            <ScrollView style={styles.reviewList} keyboardShouldPersistTaps="handled">
-              {matchingStagedApps.map((item) => (
-                <View key={item.app.bundleIdentifier} style={[styles.stagedAppRow, { borderColor: theme.separator }]}>
-                  <TouchableOpacity
-                    accessibilityRole="checkbox"
-                    accessibilityState={{ checked: item.selected }}
-                    onPress={() => toggleStaged(item.app.bundleIdentifier)}
-                    style={[styles.selectionBox, { backgroundColor: item.selected ? accent : 'transparent', borderColor: item.selected ? accent : theme.secondaryLabel }]}
-                  >
-                    <Text style={styles.selectionMark}>{item.selected ? '✓' : ''}</Text>
-                  </TouchableOpacity>
-                  <Image source={{ uri: item.app.iconURL }} style={styles.stagedIcon} contentFit="cover" />
-                  <View style={styles.stagedAppInfo}>
-                    <Text selectable numberOfLines={1} style={[styles.stagedAppName, { color: theme.label }]}>{item.app.name}</Text>
-                    <Text selectable numberOfLines={1} style={[styles.stagedAppBundle, { color: theme.secondaryLabel }]}>{item.app.bundleIdentifier}</Text>
-                    <TouchableOpacity accessibilityRole="button" onPress={() => chooseStagedCategory(item.app.bundleIdentifier)} style={[styles.stagedCategoryButton, { borderColor: accent }]}>
-                      <Text style={[styles.stagedCategoryText, { color: accent }]}>{item.category} ›</Text>
-                    </TouchableOpacity>
-                    {categoryPickerBundleId === item.app.bundleIdentifier ? (
-                      <View style={styles.inlineCategoryPicker}>
-                        <AppCategoryTabs
-                          categories={CATEGORIES}
-                          selectedCategory={item.category}
-                          onSelectCategory={(category) => setStagedCategory(item.app.bundleIdentifier, category)}
-                          accentColor={accent}
-                        />
-                      </View>
-                    ) : null}
-                  </View>
-                </View>
-              ))}
-              {!matchingStagedApps.length ? <Text selectable style={[styles.noMatches, { color: theme.secondaryLabel }]}>No extracted apps match that search.</Text> : null}
-            </ScrollView>
-            <TouchableOpacity
-              accessibilityRole="button"
-              onPress={() => void handleMergeReviewedApps()}
-              disabled={!selectedStagedCount || isSaving}
-              style={[styles.mergeButton, { backgroundColor: accent, opacity: !selectedStagedCount || isSaving ? 0.5 : 1 }]}
-            >
-              {isSaving ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.submitBtnText}>Merge {selectedStagedCount} Selected {selectedStagedCount === 1 ? 'App' : 'Apps'}</Text>}
-            </TouchableOpacity>
-          </View>
-        </BottomSheet>
-      </Host>
-      ) : null}
+      <RepositoryImportReview
+        accentColor={accent}
+        apps={stagedApps}
+        categories={CATEGORIES}
+        colors={theme}
+        isPresented={isReviewSheetPresented}
+        isSaving={isSaving}
+        onDismiss={() => setIsReviewSheetPresented(false)}
+        onMerge={() => void handleMergeReviewedApps()}
+        onSetCategory={setStagedCategory}
+        onSetSelected={setStagedSelected}
+        onToggleSelected={toggleStaged}
+      />
     </>
   );
 }
@@ -767,6 +769,7 @@ const styles = StyleSheet.create({
   submitBtnText: { color: '#FFFFFF', fontSize: 15, fontWeight: '700' },
   secondaryButton: { minHeight: 44, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderRadius: 12 },
   secondaryButtonText: { fontSize: 14, fontWeight: '700' },
+  reviewAgainButton: { marginTop: 10 },
   inlineError: { marginTop: 12, fontSize: 13, lineHeight: 18 },
   requestCard: { marginHorizontal: 16, marginBottom: 12, padding: 16, borderWidth: StyleSheet.hairlineWidth, borderRadius: 18, borderCurve: 'continuous' },
   requestTitle: { fontSize: 17, fontWeight: '700' },
@@ -786,26 +789,4 @@ const styles = StyleSheet.create({
   categorySummaryRow: { minHeight: 42, alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', borderBottomWidth: StyleSheet.hairlineWidth },
   categorySummaryLabel: { fontSize: 15 },
   categorySummaryValue: { fontSize: 15, fontWeight: '700', fontVariant: ['tabular-nums'] },
-  sheetHost: { ...StyleSheet.absoluteFill, pointerEvents: 'box-none' },
-  reviewSheet: { flex: 1, minHeight: 420, paddingTop: 8 },
-  reviewHeader: { alignItems: 'center', flexDirection: 'row', gap: 12, paddingHorizontal: 18, paddingBottom: 12 },
-  reviewHeaderText: { flex: 1 },
-  reviewTitle: { fontSize: 19, fontWeight: '700' },
-  reviewSub: { marginTop: 3, fontSize: 12 },
-  closeSheetButton: { minHeight: 34, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 12, borderRadius: 10, borderWidth: StyleSheet.hairlineWidth },
-  closeSheetText: { fontSize: 13, fontWeight: '600' },
-  reviewSearch: { minHeight: 42, marginHorizontal: 18, paddingHorizontal: 12, borderRadius: 12, borderWidth: StyleSheet.hairlineWidth, fontSize: 14 },
-  reviewList: { flex: 1, marginTop: 10 },
-  stagedAppRow: { minHeight: 76, alignItems: 'center', flexDirection: 'row', gap: 10, marginHorizontal: 18, paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth },
-  selectionBox: { width: 24, height: 24, alignItems: 'center', justifyContent: 'center', borderRadius: 7, borderWidth: 1 },
-  selectionMark: { color: '#FFFFFF', fontSize: 16, fontWeight: '800' },
-  stagedIcon: { width: 44, height: 44, borderRadius: 10, borderCurve: 'continuous', backgroundColor: 'rgba(120, 120, 128, 0.16)' },
-  stagedAppInfo: { flex: 1, minWidth: 0 },
-  stagedAppName: { fontSize: 15, fontWeight: '700' },
-  stagedAppBundle: { marginTop: 2, fontSize: 11 },
-  stagedCategoryButton: { alignSelf: 'flex-start', marginTop: 5, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, borderWidth: 1 },
-  stagedCategoryText: { fontSize: 11, fontWeight: '700' },
-  inlineCategoryPicker: { marginTop: 4, marginLeft: -10, width: '100%' },
-  noMatches: { paddingHorizontal: 18, paddingVertical: 24, textAlign: 'center' },
-  mergeButton: { minHeight: 50, alignItems: 'center', justifyContent: 'center', marginHorizontal: 18, marginTop: 10, marginBottom: 20, borderRadius: 14 },
 });

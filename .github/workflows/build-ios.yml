@@ -1,0 +1,125 @@
+name: Xcode - Build ryP0 IPA
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      create_draft_release:
+        description: Attach the unsigned IPA to a draft release in this repository
+        type: boolean
+        default: false
+        required: false
+
+# Building and downloading artifacts does not need repository write access.
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: Unsigned iPhone Release IPA
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      CI: '1'
+      EXPO_NO_TELEMETRY: '1'
+      # Only public endpoint URLs belong in an iPhone bundle. These are GitHub
+      # repository Variables, not Telegram/R2/GitHub credentials or EAS secrets.
+      EXPO_PUBLIC_REQUESTS_API_URL: ${{ vars.EXPO_PUBLIC_REQUESTS_API_URL }}
+      EXPO_PUBLIC_IMPORT_API_URL: ${{ vars.EXPO_PUBLIC_IMPORT_API_URL }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
+        with:
+          xcode-version: '26.6'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '22.23.2'
+          cache: npm
+
+      - name: Install locked dependencies and native patches
+        # postinstall runs patch-package; --ignore-scripts would break the build.
+        run: npm ci --include=dev
+
+      - name: Check TypeScript
+        # @expo/ui's SwiftUI component types are deeply nested. Increase only
+        # the compiler stack; this does not change the app's runtime settings.
+        run: npm run typecheck
+
+      - name: Generate the native iOS project
+        # ios/ is intentionally ignored. A fresh runner generates it from app.json.
+        run: npx --no-install expo prebuild --platform ios --no-install
+
+      - name: Install CocoaPods
+        working-directory: ios
+        run: pod install
+
+      - name: Build and verify the IPA
+        run: bash scripts/build-unsigned-ipa.sh
+
+      - name: Upload unsigned IPA and checksum
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ryP0-unsigned-${{ github.run_number }}
+          path: |
+            dist/ios/ryP0-unsigned.ipa
+            dist/ios/ryP0-unsigned.ipa.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ryP0-xcode-log-${{ github.run_number }}
+          path: dist/ios/xcodebuild.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  draft-release:
+    name: Create requested draft release
+    needs: build
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.create_draft_release &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # gh creates the explicitly requested draft release.
+    steps:
+      - name: Download this run's verified IPA
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ryP0-unsigned-${{ github.run_number }}
+          path: artifacts
+
+      - name: Create a draft without publishing source or an automatic nightly
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BUILD_SHA: ${{ github.sha }}
+          BUILD_NUMBER: ${{ github.run_number }}
+          BUILD_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          cd artifacts
+          sha256sum --check ryP0-unsigned.ipa.sha256
+          gh release create "ios-build-${BUILD_NUMBER}-${BUILD_ATTEMPT}" \
+            ryP0-unsigned.ipa ryP0-unsigned.ipa.sha256 \
+            --target "$BUILD_SHA" \
+            --title "ryP0 iOS build ${BUILD_NUMBER}" \
+            --notes 'Unsigned iPhone Release IPA with an embedded JavaScript bundle. Re-sign with your preferred iOS signing tool before installing. This draft is not published automatically.' \
+            --draft --prerelease

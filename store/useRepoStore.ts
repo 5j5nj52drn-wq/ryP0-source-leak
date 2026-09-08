@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { RepoData, RepoApp } from '../types/repo';
+import { RepoData, RepoApp, RepoAppStatus } from '../types/repo';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Appearance } from 'react-native';
 import {
@@ -11,11 +11,16 @@ import {
   fetchRepositorySnapshot,
   githubErrorMessage,
   GitHubApiError,
+  renameRepositoryIcon,
   updateRepositoryFile,
   uploadRepositoryIcon,
   validateGitHubToken,
   ValidatedGitHubAccount,
 } from '../services/github-api';
+import {
+  getAppStatusKey,
+  verifyRepositoryAppStatuses,
+} from '../services/app-status';
 import {
   CredentialProtectionStatus,
   deleteStoredGitHubToken,
@@ -26,6 +31,7 @@ import {
 
 export interface GithubFile {
   name: string;
+  displayName?: string;
   path: string;
   sha: string;
   size: number;
@@ -49,6 +55,7 @@ interface RepoState {
   credentialProtection: CredentialProtectionStatus | null;
   isInitialized: boolean;
   iconsList: GithubFile[];
+  runtimeAppStatuses: Record<string, RepoAppStatus>;
   pendingIconSelection: string | null;
   isSearchOpen: boolean;
   searchQuery: string;
@@ -70,6 +77,7 @@ interface RepoState {
   commitChanges: () => Promise<void>;
   fetchIcons: () => Promise<void>;
   uploadIcon: (base64Data: string, filename: string) => Promise<string>;
+  renameIcon: (filename: string, displayName: string) => Promise<void>;
   setPendingIconSelection: (url: string | null) => void;
   installApp: (app: RepoApp) => Promise<void>;
 }
@@ -80,6 +88,8 @@ const ACCENT_COLOR_KEY = '@accent_color';
 
 let initializationPromise: Promise<void> | null = null;
 let commitPromise: Promise<void> | null = null;
+let repositoryFetchGeneration = 0;
+let statusVerificationController: AbortController | null = null;
 
 const isAppearancePreference = (value: string | null): value is AppearancePreference =>
   value === 'system' || value === 'light' || value === 'dark';
@@ -100,6 +110,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
   credentialProtection: null,
   isInitialized: false,
   iconsList: [],
+  runtimeAppStatuses: {},
   pendingIconSelection: null,
   isSearchOpen: false,
   searchQuery: '',
@@ -287,11 +298,53 @@ export const useRepoStore = create<RepoState>((set, get) => ({
   },
 
   fetchRepo: async () => {
+    const generation = ++repositoryFetchGeneration;
+    statusVerificationController?.abort();
+    statusVerificationController = null;
     set({ isLoading: true, error: null });
     try {
       const snapshot = await fetchRepositorySnapshot();
-      set({ repo: snapshot.data, repoSha: snapshot.sha, isLoading: false });
+      if (generation !== repositoryFetchGeneration) return;
+
+      // Publish repo.json first so the list can render without waiting for every
+      // remote IPA host and workflow endpoint.
+      set({
+        repo: snapshot.data,
+        repoSha: snapshot.sha,
+        runtimeAppStatuses: {},
+        isLoading: false,
+      });
+
+      const controller = new AbortController();
+      statusVerificationController = controller;
+      setTimeout(() => {
+        if (generation !== repositoryFetchGeneration || controller.signal.aborted) return;
+
+        void verifyRepositoryAppStatuses(snapshot.data.apps, {
+          concurrency: 4,
+          signal: controller.signal,
+          onStatus: ({ key, app, status }) => {
+            if (generation !== repositoryFetchGeneration || controller.signal.aborted) return;
+            const currentApp = get().repo?.apps.find(
+              (candidate) => candidate.bundleIdentifier === app.bundleIdentifier,
+            );
+            if (!currentApp || getAppStatusKey(currentApp) !== key) return;
+
+            set((state) => ({
+              runtimeAppStatuses: {
+                ...state.runtimeAppStatuses,
+                [key]: status,
+              },
+            }));
+          },
+        }).catch((error) => {
+          if (!controller.signal.aborted) {
+            console.warn('App status verification did not complete.', error);
+          }
+        });
+      }, 0);
     } catch (error) {
+      if (generation !== repositoryFetchGeneration) return;
       set({ error: githubErrorMessage(error), isLoading: false });
     }
   },
@@ -301,9 +354,10 @@ export const useRepoStore = create<RepoState>((set, get) => ({
     try {
       const data = await fetchRepositoryIcons();
       const icons: GithubFile[] = data
-        .filter(file => file.name.match(/\.(png|jpg|jpeg|gif)$/i) && Boolean(file.download_url))
+        .filter(file => file.name.match(/\.(png|jpg|jpeg|gif|webp)$/i) && Boolean(file.download_url))
         .map(file => ({
           name: file.name,
+          displayName: file.displayName,
           path: file.path,
           sha: file.sha,
           size: file.size,
@@ -334,6 +388,22 @@ export const useRepoStore = create<RepoState>((set, get) => ({
       set({ error: githubErrorMessage(error), isLoading: false });
       throw error;
     }
+  },
+
+  renameIcon: async (filename: string, displayName: string) => {
+    const { isDeveloperMode } = get();
+    if (!isDeveloperMode) throw new Error('Validated Developer Mode access is required.');
+
+    const token = await getStoredGitHubToken();
+    if (!token) throw new Error('Developer credentials are unavailable. Sign in again in Settings.');
+    await renameRepositoryIcon(token, filename, displayName);
+
+    const normalizedName = displayName.trim();
+    set((state) => ({
+      iconsList: state.iconsList.map((icon) => (
+        icon.name === filename ? { ...icon, displayName: normalizedName } : icon
+      )),
+    }));
   },
 
   reorderApps: (newApps: RepoApp[]) => {

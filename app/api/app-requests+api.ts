@@ -7,6 +7,7 @@ const METHODS: readonly AppRequestMethod[] = ['updatable-source', 'direct-ipa', 
 const MAX_BODY_BYTES = 12_000;
 const RATE_LIMIT_WINDOW_MS = 15 * 60 * 1_000;
 const RATE_LIMIT_MAX_REQUESTS = 5;
+const GITHUB_TIMEOUT_MS = 12_000;
 
 type GitHubIssue = {
   number: number;
@@ -44,7 +45,7 @@ function responseHeaders(request?: Request, extra: HeadersInit = {}) {
       headers.set('Access-Control-Allow-Origin', origin);
       headers.set('Vary', 'Origin');
       headers.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
-      headers.set('Access-Control-Allow-Headers', 'Content-Type');
+      headers.set('Access-Control-Allow-Headers', 'Content-Type, Idempotency-Key');
     }
   }
 
@@ -82,14 +83,14 @@ function validateRequest(value: unknown): AppRequestSubmission | null {
   if (!name || !description || !category || !sourceUrl || !METHODS.includes(method) || !isValidSourceUrl(sourceUrl)) {
     return null;
   }
-  return { name, description, category, sourceUrl, method };
+  return { name, description, category, sourceUrl: new URL(sourceUrl).toString(), method };
 }
 
 function escapeMarkdown(value: string) {
   return value.replace(/([\\`*_{}[\]<>])/g, '\\$1');
 }
 
-function issueBody(request: AppRequestSubmission) {
+function issueBody(request: AppRequestSubmission, requestKey?: string) {
   const methodLabel: Record<AppRequestMethod, string> = {
     'updatable-source': 'Updatable source',
     'direct-ipa': 'Direct IPA download',
@@ -97,6 +98,7 @@ function issueBody(request: AppRequestSubmission) {
   };
   return [
     '<!-- ryp0-app-request -->',
+    ...(requestKey ? [`<!-- ryp0-request-key:${requestKey} -->`] : []),
     '## App request',
     `- **Name:** ${escapeMarkdown(request.name)}`,
     `- **Category:** ${escapeMarkdown(request.category)}`,
@@ -146,6 +148,12 @@ function consumeRateLimit(request: Request) {
   const existing = requestRateLimits.get(key);
 
   if (!existing || existing.resetAt <= now) {
+    if (requestRateLimits.size >= 1_024) {
+      for (const [candidate, entry] of requestRateLimits) {
+        if (entry.resetAt <= now || requestRateLimits.size >= 1_024) requestRateLimits.delete(candidate);
+        if (requestRateLimits.size < 900) break;
+      }
+    }
     requestRateLimits.set(key, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
     return { allowed: true, retryAfterSeconds: 0 };
   }
@@ -173,16 +181,24 @@ async function readJsonBody(request: Request): Promise<unknown> {
 
 async function github(path: string, init: RequestInit = {}) {
   const token = process.env.GITHUB_REQUESTS_TOKEN;
-  const response = await fetch(`https://api.github.com${path}`, {
-    ...init,
-    headers: {
-      Accept: 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(init.body ? { 'Content-Type': 'application/json' } : {}),
-      ...init.headers,
-    },
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), GITHUB_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetch(`https://api.github.com${path}`, {
+      ...init,
+      headers: {
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(init.body ? { 'Content-Type': 'application/json' } : {}),
+        ...init.headers,
+      },
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
 
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
@@ -194,25 +210,18 @@ async function github(path: string, init: RequestInit = {}) {
   return payload;
 }
 
-async function ensureRequestLabel() {
-  const token = process.env.GITHUB_REQUESTS_TOKEN;
-  const response = await fetch(`https://api.github.com/repos/${OWNER}/${REPOSITORY}/labels/${encodeURIComponent(LABEL)}`, {
-    headers: {
-      Accept: 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-  });
+function requestKeyFrom(request: Request) {
+  const value = request.headers.get('idempotency-key')?.trim().toLowerCase();
+  return value && /^[a-f0-9]{64}$/.test(value) ? value : undefined;
+}
 
-  if (response.ok) return;
-  if (response.status !== 404) {
-    throw new Error('Could not verify the app-request label.');
-  }
-
-  await github(`/repos/${OWNER}/${REPOSITORY}/labels`, {
-    method: 'POST',
-    body: JSON.stringify({ name: LABEL, color: '0E8A16', description: 'Submitted from ryP0 consumers' }),
-  });
+async function findExistingRequest(requestKey: string): Promise<GitHubIssue | null> {
+  const issues = await github(
+    `/repos/${OWNER}/${REPOSITORY}/issues?state=open&labels=${encodeURIComponent(LABEL)}&per_page=50`,
+  );
+  if (!Array.isArray(issues)) return null;
+  const marker = `<!-- ryp0-request-key:${requestKey} -->`;
+  return (issues as GitHubIssue[]).find(issue => typeof issue.body === 'string' && issue.body.includes(marker)) ?? null;
 }
 
 export function OPTIONS(request: Request) {
@@ -261,18 +270,25 @@ export async function POST(request: Request) {
       return json(request, { error: 'Enter a name, description, category, HTTPS source link, and submission method.' }, 400);
     }
 
-    await ensureRequestLabel();
+    const requestKey = requestKeyFrom(request);
+    if (requestKey) {
+      const existing = await findExistingRequest(requestKey);
+      if (existing) {
+        return json(request, { request: requestFromIssue(existing) }, 200);
+      }
+    }
     const issue = await github(`/repos/${OWNER}/${REPOSITORY}/issues`, {
       method: 'POST',
       body: JSON.stringify({
         title: `App request: ${submission.name}`,
-        body: issueBody(submission),
+        body: issueBody(submission, requestKey),
         labels: [LABEL],
       }),
     }) as GitHubIssue;
 
     return json(request, { request: requestFromIssue(issue) }, 201);
-  } catch (error: any) {
-    return json(request, { error: error?.message || 'Could not submit this app request.' }, 502);
+  } catch (error) {
+    console.error('App request submission failed', error instanceof Error ? error.message : error);
+    return json(request, { error: 'Could not submit this app request. Please try again shortly.' }, 502);
   }
 }

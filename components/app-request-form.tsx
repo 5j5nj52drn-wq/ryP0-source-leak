@@ -1,5 +1,5 @@
-import React, { useCallback, useState } from 'react';
-import { Alert, Linking, ScrollView, useWindowDimensions } from 'react-native';
+import React, { useCallback, useRef, useState } from 'react';
+import { Alert, ScrollView, useWindowDimensions } from 'react-native';
 import { Host, FieldGroup, TextInput, Button, useNativeState, Text, ListItem, Picker } from '@expo/ui';
 import { Stack } from 'expo-router';
 import { submitAppRequest } from '../services/app-requests';
@@ -28,6 +28,7 @@ export default function AppRequestForm() {
   const [category, setCategory] = useState<(typeof REQUEST_CATEGORIES)[number]>('Sideloading');
   const [method, setMethod] = useState<AppRequestMethod>('updatable-source');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const submitLock = useRef(false);
   const { height: viewportHeight, fontScale } = useWindowDimensions();
   const formHeight = Math.max(viewportHeight + 180, 900 * Math.max(1, fontScale));
 
@@ -37,6 +38,7 @@ export default function AppRequestForm() {
   }, []);
 
   const handleSubmit = async () => {
+    if (submitLock.current) return;
     const submission = {
       name: name.value.trim(),
       description: description.value.trim(),
@@ -58,27 +60,10 @@ export default function AppRequestForm() {
       return;
     }
 
+    submitLock.current = true;
     setIsSubmitting(true);
     try {
-      const result = await submitAppRequest(submission);
-      if (result.kind === 'continue-in-github') {
-        Alert.alert(
-          'Continue in GitHub',
-          'A secure, prefilled request form is ready in GitHub. Sign in there and tap Submit to send your request. Your details will stay here if you need to come back.',
-          [
-            { text: 'Not Now', style: 'cancel' },
-            {
-              text: 'Open GitHub',
-              onPress: () => {
-                void Linking.openURL(result.url).catch(() => {
-                  Alert.alert('Could Not Open GitHub', 'Open GitHub in your browser and submit the request there.');
-                });
-              },
-            },
-          ],
-        );
-        return;
-      }
+      await submitAppRequest(submission);
       name.value = '';
       description.value = '';
       setCategory('Sideloading');
@@ -88,6 +73,7 @@ export default function AppRequestForm() {
     } catch (error: any) {
       Alert.alert('Could Not Send Request', error?.message || 'Try again when you are connected.');
     } finally {
+      submitLock.current = false;
       setIsSubmitting(false);
     }
   };

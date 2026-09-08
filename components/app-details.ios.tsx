@@ -21,7 +21,6 @@ import {
   buttonStyle,
   clipShape,
   font,
-  foregroundColor,
   foregroundStyle,
   frame,
   lineLimit,
@@ -39,6 +38,7 @@ import {
 import { useRepoStore } from '../store/useRepoStore';
 import type { RepoApp, RepoVersion } from '../types/repo';
 import { installInLiveContainer } from '../services/livecontainer';
+import { getAppStatus, getAppStatusKey, getAppUpdatePolicy } from '../services/app-status';
 
 const SECONDARY = { type: 'hierarchical', style: 'secondary' } as const;
 const TERTIARY = { type: 'hierarchical', style: 'tertiary' } as const;
@@ -92,7 +92,9 @@ export default function AppDetails({ app }: AppDetailsProps) {
   const router = useRouter();
   const isDeveloperMode = useRepoStore((state) => state.isDeveloperMode);
   const installApp = useRepoStore((state) => state.installApp);
+  const runtimeStatus = useRepoStore((state) => state.runtimeAppStatuses[getAppStatusKey(app)]);
   const latestVersion = app.versions[0];
+  const appStatus = getAppStatus(app, runtimeStatus ?? app.status);
   const appDescription = app.localizedDescription || app.subtitle || 'No description has been provided for this app.';
 
   const handleInstall = async () => {
@@ -239,6 +241,21 @@ export default function AppDetails({ app }: AppDetailsProps) {
             header={sectionHeader('App Information')}
             modifiers={[listRowBackground(Color.ios.secondarySystemGroupedBackground)]}
           >
+            <LabeledContent label="App Type">
+              <Text modifiers={[font({ weight: 'semibold' }), foregroundStyle(SECONDARY)]}>
+                {getAppUpdatePolicy(app) === 'daily' ? 'Daily Update' : 'Static'}
+              </Text>
+            </LabeledContent>
+            <LabeledContent label="Status">
+              <HStack spacing={6}>
+                <Image systemName={appStatus.symbol} size={14} color={appStatus.color} />
+                <Text modifiers={[foregroundStyle(appStatus.color), font({ weight: 'semibold' })]}>{appStatus.label}</Text>
+              </HStack>
+            </LabeledContent>
+            <Text modifiers={[font({ size: 13 }), foregroundStyle(SECONDARY)]}>
+              {appStatus.message || appStatus.detail}
+              {appStatus.checkedAt ? ` · Checked ${formatReleaseDate(appStatus.checkedAt)}` : ''}
+            </Text>
             <LabeledContent label="Developer">
               <Text modifiers={[foregroundStyle(SECONDARY), lineLimit(1), truncationMode('tail')]}>
                 {app.developerName || 'Unknown'}

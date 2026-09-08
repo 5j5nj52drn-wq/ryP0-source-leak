@@ -1,8 +1,7 @@
-import React, { useCallback, useEffect } from 'react';
+import React, { useCallback } from 'react';
 import { Text as RNText, TouchableOpacity } from 'react-native';
 import { Stack } from 'expo-router';
 import {
-  Button,
   FieldGroup,
   Host,
   ListItem,
@@ -14,9 +13,6 @@ import type { EditAppFormProps } from '../types/edit-app-form';
 
 export default function EditAppForm({
   app,
-  pendingIconSelection,
-  onConsumePendingIconSelection,
-  onBrowseIcons,
   onCancel,
   onSave,
 }: EditAppFormProps) {
@@ -25,12 +21,6 @@ export default function EditAppForm({
   const iconURL = useNativeState(app.iconURL || '');
   const tintColor = useNativeState(app.tintColor || '');
   const category = useNativeState(app.category || '');
-
-  useEffect(() => {
-    if (!pendingIconSelection) return;
-    iconURL.value = pendingIconSelection;
-    onConsumePendingIconSelection();
-  }, [pendingIconSelection, onConsumePendingIconSelection]);
 
   const setName = useCallback((value: string) => { 'worklet'; name.value = value; }, [name]);
   const setSubtitle = useCallback((value: string) => { 'worklet'; subtitle.value = value; }, [subtitle]);
@@ -75,7 +65,6 @@ export default function EditAppForm({
           </FieldGroup.Section>
           <FieldGroup.Section title="Assets">
             <TextInput value={iconURL} onChangeText={setIconURL} placeholder="Icon URL" />
-            <Button onPress={onBrowseIcons}><Text>Browse Icon Gallery</Text></Button>
           </FieldGroup.Section>
           <FieldGroup.Section title="Design">
             <TextInput value={tintColor} onChangeText={setTintColor} placeholder="Tint Color" />

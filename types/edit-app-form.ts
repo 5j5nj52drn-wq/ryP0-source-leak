@@ -15,9 +15,6 @@ export interface EditAppFormProps {
   app: RepoApp;
   appIndex: number;
   initialSection?: 'card' | 'page' | 'versions';
-  pendingIconSelection: string | null;
-  onConsumePendingIconSelection: () => void;
-  onBrowseIcons: () => void;
   onCancel: () => void;
   /** Resolves only after the change is safely stored by the repository source of truth. */
   onSave: (fields: EditableAppFields) => void | Promise<void>;

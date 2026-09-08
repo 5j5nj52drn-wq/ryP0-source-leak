@@ -14,6 +14,20 @@ export interface RepoAppPermissions {
   };
 }
 
+export type AppUpdatePolicy = 'daily' | 'static';
+
+export interface RepoAppAutomation {
+  workflowPath?: string;
+  sourceURL?: string;
+}
+
+export interface RepoAppStatus {
+  state: 'healthy' | 'broken' | 'update-error' | 'unknown';
+  checkedDownloadURL?: string;
+  checkedAt?: string;
+  message?: string;
+}
+
 export interface RepoApp {
   name: string;
   bundleIdentifier: string;
@@ -23,6 +37,9 @@ export interface RepoApp {
   iconURL: string;
   tintColor?: string;
   category?: string;
+  updatePolicy?: AppUpdatePolicy;
+  automation?: RepoAppAutomation;
+  status?: RepoAppStatus;
   versions: RepoVersion[];
   appPermissions?: RepoAppPermissions;
 }

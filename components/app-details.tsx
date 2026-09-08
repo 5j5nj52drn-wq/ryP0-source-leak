@@ -5,6 +5,7 @@ import { Button, FieldGroup, Host, ListItem, Text } from '@expo/ui';
 import { useRepoStore } from '../store/useRepoStore';
 import type { RepoApp, RepoVersion } from '../types/repo';
 import { installInLiveContainer } from '../services/livecontainer';
+import { getAppStatus, getAppStatusKey, getAppUpdatePolicy } from '../services/app-status';
 
 interface AppDetailsProps {
   app: RepoApp;
@@ -22,7 +23,9 @@ export default function AppDetails({ app }: AppDetailsProps) {
   const router = useRouter();
   const isDeveloperMode = useRepoStore((state) => state.isDeveloperMode);
   const installApp = useRepoStore((state) => state.installApp);
+  const runtimeStatus = useRepoStore((state) => state.runtimeAppStatuses[getAppStatusKey(app)]);
   const latestVersion = app.versions[0];
+  const appStatus = getAppStatus(app, runtimeStatus ?? app.status);
 
   const handleInstall = async () => {
     try {
@@ -56,6 +59,8 @@ export default function AppDetails({ app }: AppDetailsProps) {
         <Host style={{ minHeight: 700 + app.versions.length * 72, width: '100%' }}>
           <FieldGroup>
             <FieldGroup.Section title="App Information">
+              <ListItem trailing={<Text>{getAppUpdatePolicy(app) === 'daily' ? 'Daily Update' : 'Static'}</Text>}><Text>App Type</Text></ListItem>
+              <ListItem supportingText={appStatus.message || appStatus.detail} trailing={<Text>{appStatus.label}</Text>}><Text>Status</Text></ListItem>
               <ListItem supportingText={app.developerName || 'Unknown developer'}>
                 <Text>{app.name}</Text>
               </ListItem>

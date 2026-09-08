@@ -5,7 +5,11 @@ import { dispatchGitHubWorkflow, listGitHubWorkflows } from './github-workflows'
 export const DEFAULT_ICON_URL = 'https://raw.githubusercontent.com/ry0-x/ry0-x.github.io/main/icons/ry0_.jpg';
 
 const REQUEST_TIMEOUT_MS = 20_000;
-const MAX_REPOSITORY_BYTES = 2_000_000;
+// A large catalogue may contain thousands of apps and their complete version
+// history. Bound bytes while reading, rather than rejecting ordinary catalogues
+// at 2 MB after allocating the whole response.
+const MAX_REPOSITORY_BYTES = 32 * 1024 * 1024;
+const MAX_GITHUB_BYTES = 16 * 1024 * 1024;
 
 type GitHubAsset = {
   name?: string;
@@ -24,13 +28,13 @@ type GitHubRelease = {
 type GitHubRepository = {
   name?: string;
   description?: string | null;
-  owner?: { login?: string; avatar_url?: string };
+  default_branch?: string;
+  owner?: { login?: string };
 };
 
-type GitHubContent = {
-  name?: string;
-  type?: string;
-  download_url?: string | null;
+type GitHubTree = {
+  tree?: { path?: string; type?: string; size?: number }[];
+  truncated?: boolean;
 };
 
 type RawRepoVersion = Partial<RepoVersion> & Record<string, unknown>;
@@ -67,16 +71,55 @@ function today() {
   return new Date().toISOString().slice(0, 10);
 }
 
-async function fetchText(url: string, init: RequestInit = {}) {
+type FetchOptions = { maxBytes?: number; timeoutMs?: number; signal?: AbortSignal };
+
+async function fetchText(url: string, init: RequestInit = {}, options: FetchOptions = {}) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const abort = () => controller.abort();
+  const externalSignal = options.signal || init.signal;
+  if (externalSignal?.aborted) controller.abort();
+  externalSignal?.addEventListener('abort', abort, { once: true });
+  const timeout = setTimeout(abort, options.timeoutMs || REQUEST_TIMEOUT_MS);
   try {
     const response = await fetch(url, {
       ...init,
       headers: { Accept: 'application/json', ...init.headers },
       signal: controller.signal,
     });
-    const text = await response.text();
+    const maxBytes = options.maxBytes || MAX_GITHUB_BYTES;
+    const contentLength = Number(response.headers.get('content-length') || 0);
+    if (contentLength > maxBytes) {
+      await response.body?.cancel();
+      throw new ImportSourceError(`This source exceeds the ${Math.round(maxBytes / 1024 / 1024)} MB import limit.`);
+    }
+    const reader = response.body?.getReader();
+    let text = '';
+    if (reader) {
+      const decoder = new TextDecoder();
+      const chunks: string[] = [];
+      let bytes = 0;
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          bytes += value.byteLength;
+          if (bytes > maxBytes) {
+            await reader.cancel();
+            throw new ImportSourceError(`This source exceeds the ${Math.round(maxBytes / 1024 / 1024)} MB import limit.`);
+          }
+          chunks.push(decoder.decode(value, { stream: true }));
+        }
+        chunks.push(decoder.decode());
+        text = chunks.join('');
+      } finally {
+        reader.releaseLock();
+      }
+    } else {
+      text = await response.text();
+      if (new TextEncoder().encode(text).byteLength > maxBytes) {
+        throw new ImportSourceError('This source is too large to import safely.');
+      }
+    }
     if (!response.ok) {
       let message = '';
       try {
@@ -95,9 +138,12 @@ async function fetchText(url: string, init: RequestInit = {}) {
   } catch (error) {
     if (error instanceof ImportSourceError) throw error;
     const isAbort = error instanceof Error && error.name === 'AbortError';
-    throw new ImportSourceError(isAbort ? 'The source took too long to respond.' : 'Unable to reach the source. Check the URL and your connection.');
+    throw new ImportSourceError(isAbort
+      ? externalSignal?.aborted ? 'Import cancelled.' : 'The source took too long to respond.'
+      : 'Unable to reach the source. Check the URL and your connection.');
   } finally {
     clearTimeout(timeout);
+    externalSignal?.removeEventListener('abort', abort);
   }
 }
 
@@ -143,19 +189,88 @@ export function normalizeGitHubRepository(value: string) {
   return { owner, repository: repository.replace(/\.git$/i, '') };
 }
 
-async function findGitHubIcon(owner: string, repository: string, fallback: string) {
+function rawGitHubUrl(owner: string, repository: string, branch: string, path: string) {
+  return `https://raw.githubusercontent.com/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}/${encodeURIComponent(branch)}/${path.split('/').map(encodeURIComponent).join('/')}`;
+}
+
+/** Prefer an actual iOS app asset over a repository logo, badge or avatar. */
+export function githubIconPathScore(path: string) {
+  if (!/\.(png|jpe?g|webp)$/i.test(path)) return -1;
+  if (/(?:^|\/)(?:tests?|__tests__|examples?|samples?|screenshots?|badges?|avatars?)(?:\/|[-_.])/i.test(path)) return -1;
+  let score = /\.appiconset\//i.test(path) ? 100 : /(?:^|\/)(?:app[-_.]?icon|icon)(?:[-_.@\d]|\.)/i.test(path) ? 60 : /(?:^|\/)(?:logo)(?:[-_.@\d]|\.)/i.test(path) ? 20 : -1;
+  if (score < 0) return score;
+  if (/1024|marketing/i.test(path)) score += 30;
+  if (/ios|iphone|ipad/i.test(path)) score += 15;
+  if (/macos|watchos|watch|android|tvOS/i.test(path)) score -= 35;
+  if (/dark|tinted|alternate/i.test(path)) score -= 8;
+  return score;
+}
+
+function safeDiscoveredIcon(value: unknown, baseUrl: string): string | undefined {
+  if (typeof value !== 'string' || !value.trim()) return undefined;
   try {
-    const files = await fetchJson<GitHubContent[]>(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}/contents`);
-    if (!Array.isArray(files)) return fallback;
-    const preferred = files.find((file) => (
-      file.type === 'file' &&
-      typeof file.download_url === 'string' &&
-      /(^|[-_.])(app[-_.]?)?(icon|logo)([-_.]?(ios|app))?\.(png|jpe?g|webp)$/i.test(file.name || '')
-    ));
-    return preferred?.download_url && hasSafeHttpsUrl(preferred.download_url) ? preferred.download_url : fallback;
+    const url = new URL(value.trim(), baseUrl);
+    if (!hasSafeHttpsUrl(url.href)) return undefined;
+    if (/^(?:avatars\d*\.githubusercontent\.com|(?:www\.)?gravatar\.com)$/i.test(url.hostname)) return undefined;
+    return url.href;
   } catch {
-    return fallback;
+    return undefined;
   }
+}
+
+async function findGitHubIcon(owner: string, repository: string, branch: string) {
+  const rootUrl = rawGitHubUrl(owner, repository, branch, '');
+  const apiBase = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}`;
+  try {
+    const tree = await fetchJson<GitHubTree>(`${apiBase}/git/trees/${encodeURIComponent(branch)}?recursive=1`);
+    const paths = (tree.tree || []).filter((entry) => entry.type === 'blob' && typeof entry.path === 'string').map((entry) => entry.path!);
+    const candidates = paths.map((path) => ({ path, score: githubIconPathScore(path) }))
+      .filter((item) => item.score >= 0)
+      .sort((a, b) => b.score - a.score || a.path.length - b.path.length || a.path.localeCompare(b.path));
+
+    // Asset catalog Contents.json explicitly identifies the marketing/universal
+    // icon, including projects whose PNG filenames are arbitrary UUIDs.
+    const catalogue = paths.find((path) => /\.appiconset\/Contents\.json$/i.test(path) && !/macos|watchos|tvos|tests?|examples?/i.test(path));
+    if (catalogue) {
+      try {
+        const contents = await fetchJson<{ images?: { filename?: string; idiom?: string; size?: string; appearances?: unknown[] }[] }>(new URL(catalogue, rootUrl).href);
+        const image = contents.images?.filter((item) => item.filename && !item.appearances?.length)
+          .sort((a, b) => {
+            const score = (item: typeof a) => (item.idiom === 'ios-marketing' ? 2000 : item.idiom === 'universal' ? 1500 : 0) + (Number.parseInt(item.size || '0', 10) || 0);
+            return score(b) - score(a);
+          })[0];
+        const discovered = image?.filename && safeDiscoveredIcon(image.filename, new URL(catalogue, rootUrl).href);
+        if (discovered) return discovered;
+      } catch { /* A malformed optional asset catalog must not stop the import. */ }
+    }
+    if (candidates[0]?.score >= 60) return new URL(candidates[0].path, rootUrl).href;
+
+    const expoConfig = paths.find((path) => /^(?:app\.json|app\.config\.json)$/i.test(path));
+    if (expoConfig) {
+      try {
+        const config = await fetchJson<{ expo?: { icon?: string; ios?: { icon?: string | { light?: string } } } }>(new URL(expoConfig, rootUrl).href);
+        const iosIcon = config.expo?.ios?.icon;
+        const discovered = safeDiscoveredIcon(typeof iosIcon === 'string' ? iosIcon : iosIcon?.light || config.expo?.icon, rootUrl);
+        if (discovered) return discovered;
+      } catch { /* Continue to other repository-owned assets. */ }
+    }
+    if (candidates[0]) return new URL(candidates[0].path, rootUrl).href;
+
+    // README fallback only accepts images explicitly labelled as an app icon or
+    // logo; build badges and the developer's profile image are never candidates.
+    const readme = paths.find((path) => /^readme\.md$/i.test(path));
+    if (readme) {
+      const markdown = await fetchText(new URL(readme, rootUrl).href, {}, { maxBytes: 1024 * 1024 });
+      const markdownIcon = markdown.match(/!\[[^\]]*(?:app\s*icon|logo)[^\]]*\]\(([^\s)]+)(?:\s+[^)]*)?\)/i)?.[1];
+      const htmlIcon = [...markdown.matchAll(/<img\b[^>]*>/gi)].find((match) => /(?:alt|title)=["'][^"']*(?:app\s*icon|logo)[^"']*["']/i.test(match[0]))?.[0].match(/src=["']([^"']+)["']/i)?.[1];
+      const discovered = safeDiscoveredIcon(markdownIcon || htmlIcon, rootUrl);
+      if (discovered) return discovered;
+    }
+  } catch {
+    // GitHub rate limits and optional discovery failures leave a neutral app
+    // placeholder, never the unrelated developer's profile photo.
+  }
+  return DEFAULT_ICON_URL;
 }
 
 export type GitHubImportOptions = {
@@ -184,13 +299,10 @@ export async function importLatestGitHubRelease(options: GitHubImportOptions): P
 
   const sourceName = repositoryInfo.name || repository;
   const appName = cleanString(options.name, 120) || sourceName;
-  const fallbackIcon = hasSafeHttpsUrl(repositoryInfo.owner?.avatar_url)
-    ? repositoryInfo.owner.avatar_url
-    : DEFAULT_ICON_URL;
   const explicitIcon = cleanString(options.iconURL, 2_000);
   const iconURL = explicitIcon
     ? normalizeHttpsUrl(explicitIcon, 'Icon URL')
-    : await findGitHubIcon(owner, repository, fallbackIcon);
+    : await findGitHubIcon(owner, repository, repositoryInfo.default_branch || 'HEAD');
   const description = cleanString(options.description, 2_000)
     || cleanString(release.body, 2_000)
     || cleanString(repositoryInfo.description, 2_000)
@@ -205,6 +317,7 @@ export async function importLatestGitHubRelease(options: GitHubImportOptions): P
     localizedDescription: description,
     iconURL,
     category: cleanString(options.category, 60) || 'Sideloading',
+    updatePolicy: 'static',
     versions: [{
       version,
       date: cleanString(release.published_at, 30).slice(0, 10) || today(),
@@ -221,7 +334,7 @@ function normalizeVersion(value: unknown): RepoVersion | null {
   if (!hasSafeHttpsUrl(downloadURL)) return null;
   return {
     version: cleanString(version.version, 100) || '1.0.0',
-    date: cleanString(version.date, 30).slice(0, 10) || today(),
+    date: cleanString(version.date || version.versionDate, 40) || '',
     downloadURL,
     size: asNonNegativeNumber(version.size),
     ...(cleanString(version.localizedDescription, 2_000) ? { localizedDescription: cleanString(version.localizedDescription, 2_000) } : {}),
@@ -237,6 +350,12 @@ export function normalizeRemoteApp(value: unknown): RepoApp | null {
   const versions = Array.isArray(app.versions)
     ? app.versions.map(normalizeVersion).filter((version): version is RepoVersion => Boolean(version))
     : [];
+  // Legacy AltStore/SideStore sources put the latest version fields directly on
+  // the app rather than in a versions array.
+  if (!versions.length) {
+    const legacyVersion = normalizeVersion(app);
+    if (legacyVersion) versions.push(legacyVersion);
+  }
   if (!name || !bundleIdentifier || versions.length === 0) return null;
 
   const iconCandidate = cleanString(app.iconURL, 2_000);
@@ -250,15 +369,15 @@ export function normalizeRemoteApp(value: unknown): RepoApp | null {
     ...(cleanString(app.tintColor, 32) ? { tintColor: cleanString(app.tintColor, 32) } : {}),
     ...(cleanString(app.category, 60) ? { category: cleanString(app.category, 60) } : {}),
     versions,
+    // Importing another source copies its releases; it does not create a daily
+    // automation in this repository, even if the source claims to have one.
+    updatePolicy: 'static',
   };
 }
 
-export async function extractRepositoryApps(sourceUrl: string): Promise<RepoApp[]> {
+export async function extractRepositoryApps(sourceUrl: string, options: { signal?: AbortSignal } = {}): Promise<RepoApp[]> {
   const url = normalizeHttpsUrl(sourceUrl, 'Repository URL');
-  const responseText = await fetchText(url);
-  if (responseText.length > MAX_REPOSITORY_BYTES) {
-    throw new ImportSourceError('The source repo.json is too large to import safely.');
-  }
+  const responseText = await fetchText(url, {}, { maxBytes: MAX_REPOSITORY_BYTES, timeoutMs: 90_000, signal: options.signal });
 
   let payload: unknown;
   try {
@@ -274,9 +393,14 @@ export async function extractRepositoryApps(sourceUrl: string): Promise<RepoApp[
   }
 
   const uniqueApps = new Map<string, RepoApp>();
-  for (const rawApp of rawApps) {
+  for (let index = 0; index < rawApps.length; index++) {
+    if (options.signal?.aborted) throw new ImportSourceError('Import cancelled.');
+    const rawApp = rawApps[index];
     const app = normalizeRemoteApp(rawApp);
     if (app && !uniqueApps.has(app.bundleIdentifier)) uniqueApps.set(app.bundleIdentifier, app);
+    // Give keyboard, progress and cancellation events time on the JS thread
+    // while normalizing catalogues with thousands of apps.
+    if (index > 0 && index % 200 === 0) await new Promise<void>((resolve) => setTimeout(resolve, 0));
   }
   if (!uniqueApps.size) {
     throw new ImportSourceError('No valid apps with secure IPA links were found in this repository.');

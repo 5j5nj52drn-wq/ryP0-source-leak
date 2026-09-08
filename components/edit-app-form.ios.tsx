@@ -221,9 +221,6 @@ export default function EditAppForm({
   app,
   appIndex,
   initialSection = 'card',
-  pendingIconSelection,
-  onConsumePendingIconSelection,
-  onBrowseIcons,
   onCancel,
   onSave,
 }: EditAppFormProps) {
@@ -275,13 +272,6 @@ export default function EditAppForm({
     setCustomVersionError(null);
     setActiveTab(initialSection);
   }, [app.bundleIdentifier, initialSection]);
-
-  useEffect(() => {
-    if (!pendingIconSelection) return;
-    iconURL.value = pendingIconSelection;
-    setPreviewIconURL(pendingIconSelection);
-    onConsumePendingIconSelection();
-  }, [pendingIconSelection, onConsumePendingIconSelection]);
 
   const handleNameChange = useCallback((value: string) => {
     name.value = value;
@@ -582,18 +572,6 @@ export default function EditAppForm({
                 ]}
               />
             </HStack>
-            <Button onPress={onBrowseIcons} modifiers={[buttonStyle('plain')]}>
-              <HStack>
-                <Image systemName="photo.on.rectangle" size={17} />
-                <Text>Browse Icon Gallery</Text>
-                <Spacer />
-                <Image
-                  systemName="chevron.right"
-                  size={14}
-                  modifiers={[foregroundStyle(TERTIARY)]}
-                />
-              </HStack>
-            </Button>
           </Section>
 
           <Section

@@ -70,6 +70,7 @@ interface GitHubRepositoryResponse {
 
 interface GitHubContentResponse {
   name: string;
+  displayName?: string;
   type: string;
   path: string;
   sha: string;
@@ -373,6 +374,7 @@ export async function fetchRepositoryIcons(token?: string): Promise<GitHubConten
     throw new GitHubApiError('GitHub returned an invalid icons directory response.', 0, 'INVALID_RESPONSE');
   }
 
+  const labels = await fetchIconLabels(token);
   return payload.filter((item): item is GitHubContentResponse => (
     isRecord(item) &&
     item.type === 'file' &&
@@ -383,7 +385,71 @@ export async function fetchRepositoryIcons(token?: string): Promise<GitHubConten
     isNonEmptyString(item.url) &&
     isNonEmptyString(item.html_url) &&
     isNonEmptyString(item.git_url)
-  ));
+  )).map((item) => ({ ...item, displayName: labels.names[item.name] }));
+}
+
+interface IconLabelsSnapshot {
+  names: Record<string, string>;
+  sha?: string;
+}
+
+async function fetchIconLabels(token?: string): Promise<IconLabelsSnapshot> {
+  const labelsPath = `${GITHUB_REPOSITORY.iconsPath}/labels.json`;
+  const path = `/repos/${encodeURIComponent(GITHUB_REPOSITORY.owner)}/${encodeURIComponent(GITHUB_REPOSITORY.name)}/contents/${encodePath(labelsPath)}?ref=${encodeURIComponent(GITHUB_REPOSITORY.branch)}`;
+  let file: GitHubContentResponse;
+  try {
+    file = await githubRequest<GitHubContentResponse>(path, token);
+  } catch (error) {
+    if (error instanceof GitHubApiError && error.status === 404) return { names: {} };
+    throw error;
+  }
+  if (file.encoding !== 'base64' || !file.content || !file.sha) {
+    throw new GitHubApiError('The icon names file could not be read.', 0, 'INVALID_RESPONSE');
+  }
+  let value: unknown;
+  try { value = JSON.parse(base64ToUtf8(file.content)); } catch {
+    throw new GitHubApiError('The icon names file contains invalid JSON.', 0, 'INVALID_RESPONSE');
+  }
+  if (!isRecord(value) || value.version !== 1 || !isRecord(value.names)) {
+    throw new GitHubApiError('The icon names file has an unsupported format.', 0, 'INVALID_RESPONSE');
+  }
+  const names: Record<string, string> = Object.create(null);
+  for (const [filename, name] of Object.entries(value.names)) {
+    const normalizedName = typeof name === 'string' ? name.trim() : '';
+    if (normalizedName && normalizedName.length <= 100) names[filename] = normalizedName;
+  }
+  return { names, sha: file.sha };
+}
+
+/** Rename the gallery label while preserving every already published icon URL. */
+export async function renameRepositoryIcon(token: string, filename: string, displayName: string): Promise<void> {
+  const normalizedName = displayName.trim();
+  if (!normalizedName || normalizedName.length > 100 || /[\u0000-\u001f\u007f]/.test(normalizedName)) {
+    throw new GitHubApiError('Enter an icon name between 1 and 100 characters.', 0, 'REQUEST_FAILED');
+  }
+  if (!filename || filename.includes('/') || filename.includes('\\') || !/\.(png|jpe?g|gif|webp)$/i.test(filename)) {
+    throw new GitHubApiError('Select an image from the repository gallery.', 0, 'REQUEST_FAILED');
+  }
+  await validateGitHubToken(token);
+  const iconPath = `${GITHUB_REPOSITORY.iconsPath}/${filename}`;
+  const repositoryPath = `/repos/${encodeURIComponent(GITHUB_REPOSITORY.owner)}/${encodeURIComponent(GITHUB_REPOSITORY.name)}`;
+  const icon = await githubRequest<GitHubContentResponse>(`${repositoryPath}/contents/${encodePath(iconPath)}?ref=${encodeURIComponent(GITHUB_REPOSITORY.branch)}`, token);
+  if (icon.type !== 'file') throw new GitHubApiError('The selected icon no longer exists.', 404, 'CONFLICT');
+  const labels = await fetchIconLabels(token);
+  const names = { ...labels.names, [filename]: normalizedName };
+  const labelsPath = `${GITHUB_REPOSITORY.iconsPath}/labels.json`;
+  const response = await githubRequest<GitHubUpdateResponse>(`${repositoryPath}/contents/${encodePath(labelsPath)}`, token, {
+    method: 'PUT',
+    body: JSON.stringify({
+      message: `Rename gallery icon: ${filename}`,
+      content: utf8ToBase64(`${JSON.stringify({ version: 1, names }, null, 2)}\n`),
+      ...(labels.sha ? { sha: labels.sha } : {}),
+      branch: GITHUB_REPOSITORY.branch,
+    }),
+  });
+  if (!isNonEmptyString(response.content?.sha)) {
+    throw new GitHubApiError('GitHub accepted the icon name but did not confirm the labels file.', 0, 'INVALID_RESPONSE');
+  }
 }
 
 export async function uploadRepositoryIcon(

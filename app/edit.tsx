@@ -18,9 +18,6 @@ export default function EditAppScreen() {
   const appIndex = repo?.apps.findIndex(a => a.bundleIdentifier === bundleIdentifier) ?? -1;
   const originalApp = appIndex >= 0 ? repo!.apps[appIndex] : null;
 
-  const pendingIconSelection = useRepoStore((state) => state.pendingIconSelection);
-  const setPendingIconSelection = useRepoStore((state) => state.setPendingIconSelection);
-
   if (!originalApp) {
     return (
       <View style={styles.notFoundContainer}>
@@ -34,9 +31,6 @@ export default function EditAppScreen() {
       app={originalApp}
       appIndex={appIndex}
       initialSection={section === 'page' || section === 'versions' ? section : 'card'}
-      pendingIconSelection={pendingIconSelection}
-      onConsumePendingIconSelection={() => setPendingIconSelection(null)}
-      onBrowseIcons={() => router.push('/icons?mode=select')}
       onCancel={() => router.back()}
       onSave={async (fields: EditableAppFields) => {
         updateApp(appIndex, { ...originalApp, ...fields });

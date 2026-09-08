@@ -1,0 +1,22 @@
+diff --git a/node_modules/expo-dev-launcher/expo-dev-launcher.podspec b/node_modules/expo-dev-launcher/expo-dev-launcher.podspec
+index 376752c..45f932b 100644
+--- a/node_modules/expo-dev-launcher/expo-dev-launcher.podspec
++++ b/node_modules/expo-dev-launcher/expo-dev-launcher.podspec
+@@ -122,6 +122,15 @@ Pod::Spec.new do |s|
+   s.subspec 'Unsafe' do |unsafe|
+-    unsafe.source_files = 'ios/Unsafe/**/*.{h,m,mm,swift,cpp}'
+-    unsafe.compiler_flags = '-x objective-c++ -std=c++20 -fno-objc-arc' # Disable Automatic Reference Counting
++    # React Native's prebuilt React.xcframework exposes this header but deliberately
++    # omits the RCTPackagerConnection implementation. The interceptor is an
++    # Objective-C category on that class, so compiling it would leave an unresolved
++    # symbol in development builds. Keep the header available to the launcher while
++    # omitting the no-longer-used category implementation in prebuilt-Core builds.
++    if ENV['RCT_USE_PREBUILT_RNCORE'] == '1'
++      unsafe.source_files = 'ios/Unsafe/**/*.h'
++    else
++      unsafe.source_files = 'ios/Unsafe/**/*.{h,m,mm,swift,cpp}'
++      unsafe.compiler_flags = '-x objective-c++ -std=c++20 -fno-objc-arc' # Disable Automatic Reference Counting
++    end
+   end
+ 
+   s.subspec 'Main' do |main|

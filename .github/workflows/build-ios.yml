@@ -31,6 +31,9 @@ jobs:
       EXPO_NO_TELEMETRY: '1'
       # Only public endpoint URLs belong in an iPhone bundle. These are GitHub
       # repository Variables, not Telegram/R2/GitHub credentials or EAS secrets.
+      EXPO_PUBLIC_CONTROL_API_URL: ${{ vars.EXPO_PUBLIC_CONTROL_API_URL }}
+      # Older development builds can still use these aliases while the private
+      # control service is being migrated. New builds use the URL above.
       EXPO_PUBLIC_REQUESTS_API_URL: ${{ vars.EXPO_PUBLIC_REQUESTS_API_URL }}
       EXPO_PUBLIC_IMPORT_API_URL: ${{ vars.EXPO_PUBLIC_IMPORT_API_URL }}
     steps:

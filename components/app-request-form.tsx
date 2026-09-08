@@ -5,6 +5,7 @@ import { Stack } from 'expo-router';
 import { submitAppRequest } from '../services/app-requests';
 import type { AppRequestMethod } from '../types/app-request';
 import { scrollDisabled } from '@expo/ui/swift-ui/modifiers';
+import { getSafeExternalHttpsUrl } from '../services/safe-url';
 
 const METHOD_LABELS: Record<AppRequestMethod, string> = {
   'updatable-source': 'Updatable source',
@@ -52,10 +53,8 @@ export default function AppRequestForm() {
       return;
     }
 
-    try {
-      const source = new URL(submission.sourceUrl);
-      if (source.protocol !== 'https:' || source.username || source.password) throw new Error('unsafe');
-    } catch {
+    const safeSourceUrl = getSafeExternalHttpsUrl(submission.sourceUrl);
+    if (!safeSourceUrl) {
       Alert.alert('Use a Secure Source Link', 'App requests accept HTTPS links only.');
       return;
     }
@@ -63,7 +62,7 @@ export default function AppRequestForm() {
     submitLock.current = true;
     setIsSubmitting(true);
     try {
-      await submitAppRequest(submission);
+      await submitAppRequest({ ...submission, sourceUrl: safeSourceUrl });
       name.value = '';
       description.value = '';
       setCategory('Sideloading');

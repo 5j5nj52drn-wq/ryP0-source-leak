@@ -62,6 +62,7 @@ import type { RepoVersion } from '../types/repo';
 import { getAppCardTheme } from './app-card-theme';
 import { useRepoStore } from '../store/useRepoStore';
 import { ACCENT_COLORS } from '../theme/app-preferences';
+import { getSafeExternalHttpsUrl } from '../services/safe-url';
 
 const DEFAULT_CATEGORIES = ['Sideloading', 'Games', 'Social', 'EMU', 'Movies', 'Tools'];
 const EDIT_SECTIONS = [
@@ -102,20 +103,12 @@ function dateTimeForRepository(date: Date) {
 }
 
 function validateDirectIpaURL(value: string) {
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
+  const safeUrl = getSafeExternalHttpsUrl(value);
+  if (!safeUrl) {
     return 'Enter a valid HTTPS link to an IPA file.';
   }
 
-  if (url.protocol !== 'https:') {
-    return 'Custom versions must use an HTTPS IPA link.';
-  }
-
-  if (url.username || url.password) {
-    return 'IPA links cannot include a username or password.';
-  }
+  const url = new URL(safeUrl);
 
   if (!url.pathname.toLowerCase().endsWith('.ipa')) {
     return 'The direct link must point to an .ipa file.';

@@ -102,7 +102,8 @@ if [[ "$platform" != iphoneos ]]; then
   printf 'Unexpected build platform: %s\n' "$platform" >&2
   exit 1
 fi
-xcrun lipo -verify_arch arm64 "$app_path/$executable"
+# Xcode 26's lipo requires the input before the verification operation.
+xcrun lipo "$app_path/$executable" -verify_arch arm64
 
 node - "$app_path" <<'NODE'
 const fs = require('node:fs');

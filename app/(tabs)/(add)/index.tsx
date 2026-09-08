@@ -17,6 +17,7 @@ import { useRepoStore } from '../../../store/useRepoStore';
 import type { RepoApp } from '../../../types/repo';
 import type { AppRequestRecord } from '../../../types/app-request';
 import { fetchAppRequests } from '../../../services/app-requests';
+import { getSafeExternalHttpsUrl } from '../../../services/safe-url';
 import {
   DEFAULT_ICON_URL,
   extractRepositoryApps,
@@ -543,7 +544,10 @@ export default function AddAppTabScreen() {
 
   const openRequestSource = useCallback(async (request: AppRequestRecord) => {
     try {
-      await Linking.openURL(request.sourceUrl || request.issueUrl);
+      const sourceUrl = getSafeExternalHttpsUrl(request.sourceUrl)
+        ?? getSafeExternalHttpsUrl(request.issueUrl);
+      if (!sourceUrl) throw new Error('unsafe URL');
+      await Linking.openURL(sourceUrl);
     } catch {
       Alert.alert('Could Not Open Source', 'This request does not contain a usable source URL.');
     }

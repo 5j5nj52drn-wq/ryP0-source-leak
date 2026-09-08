@@ -1,6 +1,7 @@
 import { fetch } from 'expo/fetch';
 import type { RepoApp, RepoVersion } from '../types/repo';
 import { dispatchGitHubWorkflow, listGitHubWorkflows } from './github-workflows';
+import { getSafeExternalHttpsUrl, isSafeExternalHttpsUrl } from './safe-url';
 
 export const DEFAULT_ICON_URL = 'https://raw.githubusercontent.com/ry0-x/ry0-x.github.io/main/icons/ry0_.jpg';
 
@@ -44,16 +45,6 @@ export class ImportSourceError extends Error {
   constructor(message: string, public readonly status = 0) {
     super(message);
     this.name = 'ImportSourceError';
-  }
-}
-
-function hasSafeHttpsUrl(value: unknown): value is string {
-  if (typeof value !== 'string' || !value.trim()) return false;
-  try {
-    const url = new URL(value.trim());
-    return url.protocol === 'https:' && Boolean(url.hostname) && !url.username && !url.password;
-  } catch {
-    return false;
   }
 }
 
@@ -157,11 +148,11 @@ async function fetchJson<T>(url: string, init: RequestInit = {}) {
 }
 
 export function normalizeHttpsUrl(value: string, label: string) {
-  const trimmed = value.trim();
-  if (!hasSafeHttpsUrl(trimmed)) {
+  const normalized = getSafeExternalHttpsUrl(value);
+  if (!normalized) {
     throw new ImportSourceError(`${label} must be a secure HTTPS URL.`);
   }
-  return trimmed;
+  return normalized;
 }
 
 export function normalizeGitHubRepository(value: string) {
@@ -210,7 +201,7 @@ function safeDiscoveredIcon(value: unknown, baseUrl: string): string | undefined
   if (typeof value !== 'string' || !value.trim()) return undefined;
   try {
     const url = new URL(value.trim(), baseUrl);
-    if (!hasSafeHttpsUrl(url.href)) return undefined;
+    if (!isSafeExternalHttpsUrl(url.href)) return undefined;
     if (/^(?:avatars\d*\.githubusercontent\.com|(?:www\.)?gravatar\.com)$/i.test(url.hostname)) return undefined;
     return url.href;
   } catch {
@@ -291,7 +282,7 @@ export async function importLatestGitHubRelease(options: GitHubImportOptions): P
   const ipa = release.assets?.find((asset) => (
     typeof asset.name === 'string' &&
     asset.name.toLowerCase().endsWith('.ipa') &&
-    hasSafeHttpsUrl(asset.browser_download_url)
+    isSafeExternalHttpsUrl(asset.browser_download_url)
   ));
   if (!ipa?.browser_download_url) {
     throw new ImportSourceError('No secure .ipa asset was found in the latest GitHub release.');
@@ -331,7 +322,7 @@ function normalizeVersion(value: unknown): RepoVersion | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const version = value as RawRepoVersion;
   const downloadURL = cleanString(version.downloadURL, 2_000);
-  if (!hasSafeHttpsUrl(downloadURL)) return null;
+  if (!isSafeExternalHttpsUrl(downloadURL)) return null;
   return {
     version: cleanString(version.version, 100) || '1.0.0',
     date: cleanString(version.date || version.versionDate, 40) || '',
@@ -365,7 +356,7 @@ export function normalizeRemoteApp(value: unknown): RepoApp | null {
     developerName: cleanString(app.developerName, 160) || 'Unknown Developer',
     ...(cleanString(app.subtitle, 2_000) ? { subtitle: cleanString(app.subtitle, 2_000) } : {}),
     ...(cleanString(app.localizedDescription, 2_000) ? { localizedDescription: cleanString(app.localizedDescription, 2_000) } : {}),
-    iconURL: hasSafeHttpsUrl(iconCandidate) ? iconCandidate : DEFAULT_ICON_URL,
+    iconURL: isSafeExternalHttpsUrl(iconCandidate) ? iconCandidate : DEFAULT_ICON_URL,
     ...(cleanString(app.tintColor, 32) ? { tintColor: cleanString(app.tintColor, 32) } : {}),
     ...(cleanString(app.category, 60) ? { category: cleanString(app.category, 60) } : {}),
     versions,

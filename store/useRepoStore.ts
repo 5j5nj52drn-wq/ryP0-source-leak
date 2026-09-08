@@ -28,6 +28,7 @@ import {
   getStoredGitHubToken,
   storeGitHubToken,
 } from '../services/secure-credentials';
+import { requireSafeExternalHttpsUrl } from '../services/safe-url';
 
 export interface GithubFile {
   name: string;
@@ -282,14 +283,15 @@ export const useRepoStore = create<RepoState>((set, get) => ({
     if (!downloadURL) {
       throw new Error("No download URL available for this application.");
     }
+    const safeDownloadURL = requireSafeExternalHttpsUrl(downloadURL, 'The IPA download link');
 
     // Open the download or installation link directly
     const { Linking } = require('react-native');
-    const supported = await Linking.canOpenURL(downloadURL);
+    const supported = await Linking.canOpenURL(safeDownloadURL);
     if (supported) {
-      await Linking.openURL(downloadURL);
+      await Linking.openURL(safeDownloadURL);
     } else {
-      await Linking.openURL(downloadURL);
+      await Linking.openURL(safeDownloadURL);
     }
   },
 

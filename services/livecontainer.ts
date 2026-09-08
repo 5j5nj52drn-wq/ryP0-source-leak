@@ -1,5 +1,6 @@
 import { Linking, Platform } from 'react-native';
 import type { RepoVersion } from '../types/repo';
+import { requireSafeExternalHttpsUrl } from './safe-url';
 
 export class LiveContainerInstallError extends Error {
   constructor(message: string) {
@@ -9,18 +10,11 @@ export class LiveContainerInstallError extends Error {
 }
 
 function secureDownloadUrl(value: string): string {
-  const trimmed = value.trim();
-
   try {
-    const url = new URL(trimmed);
-    if (url.protocol !== 'https:' || !url.hostname || url.username || url.password) {
-      throw new Error('unsafe URL');
-    }
+    return requireSafeExternalHttpsUrl(value, 'This version does not have a safe HTTPS IPA link');
   } catch {
     throw new LiveContainerInstallError('This version does not have a safe HTTPS IPA link.');
   }
-
-  return trimmed;
 }
 
 /**

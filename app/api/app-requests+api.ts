@@ -1,4 +1,5 @@
 import type { AppRequestMethod, AppRequestSubmission } from '../../types/app-request';
+import { getSafeExternalHttpsUrl } from '../../services/safe-url';
 
 const OWNER = 'ry0-x';
 const REPOSITORY = 'ry0-x.github.io';
@@ -62,15 +63,6 @@ function plainText(value: unknown, maxLength: number) {
     : '';
 }
 
-function isValidSourceUrl(value: string) {
-  try {
-    const url = new URL(value);
-    return url.protocol === 'https:' && Boolean(url.hostname) && !url.username && !url.password;
-  } catch {
-    return false;
-  }
-}
-
 function validateRequest(value: unknown): AppRequestSubmission | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const body = value as Record<string, unknown>;
@@ -80,10 +72,11 @@ function validateRequest(value: unknown): AppRequestSubmission | null {
   const sourceUrl = plainText(body.sourceUrl, 2_000);
   const method = plainText(body.method, 40) as AppRequestMethod;
 
-  if (!name || !description || !category || !sourceUrl || !METHODS.includes(method) || !isValidSourceUrl(sourceUrl)) {
+  const safeSourceUrl = getSafeExternalHttpsUrl(sourceUrl);
+  if (!name || !description || !category || !safeSourceUrl || !METHODS.includes(method)) {
     return null;
   }
-  return { name, description, category, sourceUrl: new URL(sourceUrl).toString(), method };
+  return { name, description, category, sourceUrl: safeSourceUrl, method };
 }
 
 function escapeMarkdown(value: string) {

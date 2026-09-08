@@ -1,5 +1,6 @@
 import { fetch } from 'expo/fetch';
 import { RepoData } from '../types/repo';
+import { getSafeExternalHttpsUrl, isSafeExternalHttpsUrl } from './safe-url';
 
 export const GITHUB_REPOSITORY = {
   owner: 'ry0-x',
@@ -119,6 +120,30 @@ function assertValidRepositoryData(value: unknown): asserts value is RepoData {
     throw new GitHubApiError('repo.json must contain an apps array.', 0, 'INVALID_RESPONSE');
   }
 
+  if (value.sourceURL !== undefined && !isSafeExternalHttpsUrl(value.sourceURL)) {
+    throw new GitHubApiError('repo.json has an unsafe repository source URL.', 0, 'INVALID_RESPONSE');
+  }
+  if (value.iconURL !== undefined && !isSafeExternalHttpsUrl(value.iconURL)) {
+    throw new GitHubApiError('repo.json has an unsafe repository icon URL.', 0, 'INVALID_RESPONSE');
+  }
+
+  if (value.news !== undefined) {
+    if (!Array.isArray(value.news)) {
+      throw new GitHubApiError('repo.json has an invalid news array.', 0, 'INVALID_RESPONSE');
+    }
+    for (const [newsIndex, news] of value.news.entries()) {
+      if (!isRecord(news)) {
+        throw new GitHubApiError(`repo.json contains invalid news at position ${newsIndex + 1}.`, 0, 'INVALID_RESPONSE');
+      }
+      if (news.url !== undefined && !isSafeExternalHttpsUrl(news.url)) {
+        throw new GitHubApiError(`repo.json contains an unsafe news link at position ${newsIndex + 1}.`, 0, 'INVALID_RESPONSE');
+      }
+      if (news.imageURL !== undefined && !isSafeExternalHttpsUrl(news.imageURL)) {
+        throw new GitHubApiError(`repo.json contains an unsafe news image URL at position ${newsIndex + 1}.`, 0, 'INVALID_RESPONSE');
+      }
+    }
+  }
+
   for (const [appIndex, app] of value.apps.entries()) {
     if (
       !isRecord(app) ||
@@ -126,6 +151,7 @@ function assertValidRepositoryData(value: unknown): asserts value is RepoData {
       !isNonEmptyString(app.bundleIdentifier) ||
       !isNonEmptyString(app.developerName) ||
       !isNonEmptyString(app.iconURL) ||
+      !isSafeExternalHttpsUrl(app.iconURL) ||
       !Array.isArray(app.versions)
     ) {
       throw new GitHubApiError(
@@ -135,12 +161,30 @@ function assertValidRepositoryData(value: unknown): asserts value is RepoData {
       );
     }
 
+    if (app.automation !== undefined) {
+      if (!isRecord(app.automation)) {
+        throw new GitHubApiError(
+          `repo.json contains invalid automation metadata for ${app.name}.`,
+          0,
+          'INVALID_RESPONSE',
+        );
+      }
+      if (app.automation.sourceURL !== undefined && !isSafeExternalHttpsUrl(app.automation.sourceURL)) {
+        throw new GitHubApiError(
+          `repo.json contains an unsafe automation source URL for ${app.name}.`,
+          0,
+          'INVALID_RESPONSE',
+        );
+      }
+    }
+
     for (const [versionIndex, version] of app.versions.entries()) {
       if (
         !isRecord(version) ||
         !isNonEmptyString(version.version) ||
         !isNonEmptyString(version.date) ||
         !isNonEmptyString(version.downloadURL) ||
+        !isSafeExternalHttpsUrl(version.downloadURL) ||
         typeof version.size !== 'number' ||
         !Number.isFinite(version.size) ||
         version.size < 0
@@ -385,7 +429,13 @@ export async function fetchRepositoryIcons(token?: string): Promise<GitHubConten
     isNonEmptyString(item.url) &&
     isNonEmptyString(item.html_url) &&
     isNonEmptyString(item.git_url)
-  )).map((item) => ({ ...item, displayName: labels.names[item.name] }));
+  )).map((item) => ({
+    ...item,
+    // GitHub normally supplies this URL, but only retain it if it is safe to
+    // hand to the image layer or a future external-link action.
+    download_url: getSafeExternalHttpsUrl(item.download_url) ?? null,
+    displayName: labels.names[item.name],
+  }));
 }
 
 interface IconLabelsSnapshot {
@@ -473,8 +523,8 @@ export async function uploadRepositoryIcon(
     }),
   });
 
-  const downloadUrl = response.content?.download_url;
-  if (!isNonEmptyString(downloadUrl)) {
+  const downloadUrl = getSafeExternalHttpsUrl(response.content?.download_url);
+  if (!downloadUrl) {
     throw new GitHubApiError('GitHub accepted the icon but did not return its URL.', 0, 'INVALID_RESPONSE');
   }
 

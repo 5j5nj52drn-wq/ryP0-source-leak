@@ -6,6 +6,7 @@ import { useRepoStore } from '../store/useRepoStore';
 import type { RepoApp, RepoVersion } from '../types/repo';
 import { installInLiveContainer } from '../services/livecontainer';
 import { getAppStatus, getAppStatusKey, getAppUpdatePolicy } from '../services/app-status';
+import { requireSafeExternalHttpsUrl } from '../services/safe-url';
 
 interface AppDetailsProps {
   app: RepoApp;
@@ -37,7 +38,7 @@ export default function AppDetails({ app }: AppDetailsProps) {
 
   const handleVersionDownload = async (version: RepoVersion) => {
     try {
-      await Linking.openURL(version.downloadURL);
+      await Linking.openURL(requireSafeExternalHttpsUrl(version.downloadURL, 'This version download link'));
     } catch (error: any) {
       Alert.alert('Download', error?.message || 'Unable to open this version download link.');
     }

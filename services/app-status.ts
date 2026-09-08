@@ -1,6 +1,7 @@
 import { fetch } from 'expo/fetch';
 import type { AppUpdatePolicy, RepoApp, RepoAppStatus } from '../types/repo';
 import { GITHUB_REPOSITORY } from './github-api';
+import { getSafeExternalHttpsUrl } from './safe-url';
 
 // The repository workflow refreshes its persisted health snapshot every six
 // hours, while a device performs its own check on launch. Keep a successful
@@ -178,14 +179,8 @@ async function checkDownload(downloadURL: string | undefined, signal?: AbortSign
     return { state: 'unavailable', message: 'No latest IPA download URL is configured.' };
   }
 
-  let parsedURL: URL;
-  try {
-    parsedURL = new URL(downloadURL);
-  } catch {
-    return { state: 'unavailable', message: 'The latest IPA download URL is invalid.' };
-  }
-
-  if (parsedURL.protocol !== 'https:') {
+  const safeDownloadURL = getSafeExternalHttpsUrl(downloadURL);
+  if (!safeDownloadURL) {
     return { state: 'unavailable', message: 'The latest IPA download URL must use HTTPS.' };
   }
 
@@ -194,7 +189,7 @@ async function checkDownload(downloadURL: string | undefined, signal?: AbortSign
     // that reject HEAD. Cancel immediately after the response headers so a server
     // that ignores Range cannot stream the whole IPA into memory.
     const response = await fetchWithTimeout(
-      parsedURL.href,
+      safeDownloadURL,
       {
         method: 'GET',
         headers: { Accept: 'application/octet-stream', Range: 'bytes=0-0' },

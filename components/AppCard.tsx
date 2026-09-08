@@ -19,6 +19,7 @@ import { getAppCardTheme } from './app-card-theme';
 import AppCardContextMenu, { type AppCardContextMenuAction } from './app-card-context-menu';
 import { installInLiveContainer } from '../services/livecontainer';
 import AppStatusBadges from './app-status-badges';
+import { requireSafeExternalHttpsUrl } from '../services/safe-url';
 
 interface AppCardProps {
   app: RepoApp;
@@ -112,7 +113,7 @@ function AppCardComponent({ app, drag, isActive, onOpen, onEdit, onDelete, onDup
 
     try {
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-      await Linking.openURL(version.downloadURL);
+      await Linking.openURL(requireSafeExternalHttpsUrl(version.downloadURL, 'This IPA download link'));
     } catch (error: any) {
       Alert.alert('Installation', error?.message || 'Unable to open the IPA download link.');
     }
@@ -125,8 +126,9 @@ function AppCardComponent({ app, drag, isActive, onOpen, onEdit, onDelete, onDup
     }
 
     try {
+      const safeDownloadURL = requireSafeExternalHttpsUrl(version.downloadURL, 'This IPA download link');
       const Clipboard = await import('expo-clipboard');
-      await Clipboard.setStringAsync(version.downloadURL);
+      await Clipboard.setStringAsync(safeDownloadURL);
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       Alert.alert('IPA Link Copied', `${version.version} is ready to paste or share.`);
     } catch (error: any) {

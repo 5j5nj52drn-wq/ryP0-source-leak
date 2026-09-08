@@ -1,6 +1,9 @@
+import { getSafeExternalHttpsUrl } from '../../services/safe-url';
+
 const MAX_BODY_BYTES = 8_000;
 const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1_000;
 const RATE_LIMIT_MAX_REQUESTS = 3;
+const UPSTREAM_TIMEOUT_MS = 15_000;
 const rateLimits = new Map<string, { count: number; resetAt: number }>();
 
 function headersFor(request: Request, extra: HeadersInit = {}) {
@@ -26,15 +29,11 @@ function json(request: Request, body: unknown, status = 200, extra: HeadersInit 
 }
 
 function telegramUrl(value: unknown) {
-  if (typeof value !== 'string') return null;
-  try {
-    const url = new URL(value.trim());
-    const host = url.hostname.toLowerCase();
-    const supportedHost = host === 't.me' || host.endsWith('.t.me') || host === 'telegram.me' || host.endsWith('.telegram.me');
-    return url.protocol === 'https:' && supportedHost && !url.username && !url.password ? url.toString() : null;
-  } catch {
-    return null;
-  }
+  const url = getSafeExternalHttpsUrl(value);
+  if (!url) return null;
+  const host = new URL(url).hostname.toLowerCase();
+  const supportedHost = host === 't.me' || host.endsWith('.t.me') || host === 'telegram.me' || host.endsWith('.telegram.me');
+  return supportedHost ? url : null;
 }
 
 function clean(value: unknown, maxLength: number) {
@@ -95,20 +94,21 @@ export async function POST(request: Request) {
   const name = clean(body.name, 120);
   const description = clean(body.description, 2_000);
   const category = clean(body.category, 60);
+  const iconURL = getSafeExternalHttpsUrl(body.iconURL) ?? '';
   if (!sourceUrl || !name || !description || !category) {
     return json(request, { error: 'Enter a name, description, category, and a valid HTTPS Telegram link.' }, 400);
   }
 
-  let upstream: URL;
-  try {
-    upstream = new URL(serviceUrl);
-    if (upstream.protocol !== 'https:' || upstream.username || upstream.password) throw new Error('invalid');
-  } catch {
+  const upstream = getSafeExternalHttpsUrl(serviceUrl);
+  if (!upstream) {
     return json(request, { error: 'Telegram import service is misconfigured.' }, 503);
   }
 
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
+
   try {
-    const response = await fetch(upstream.toString(), {
+    const response = await fetch(upstream, {
       method: 'POST',
       headers: {
         Accept: 'application/json',
@@ -120,10 +120,11 @@ export async function POST(request: Request) {
         name,
         description,
         category,
-        iconURL: clean(body.iconURL, 2_000),
+        iconURL,
         developerName: clean(body.developerName, 160),
         bundleIdentifier: clean(body.bundleIdentifier, 220),
       }),
+      signal: controller.signal,
     });
     const payload = await response.json().catch(() => null);
     if (!response.ok || !payload || typeof payload !== 'object') {
@@ -132,5 +133,7 @@ export async function POST(request: Request) {
     return json(request, payload);
   } catch {
     return json(request, { error: 'Telegram import service is unavailable.' }, 502);
+  } finally {
+    clearTimeout(timeout);
   }
 }

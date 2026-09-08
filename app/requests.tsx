@@ -6,6 +6,7 @@ import { scrollDisabled } from '@expo/ui/swift-ui/modifiers';
 import { fetchAppRequests } from '../services/app-requests';
 import type { AppRequestRecord } from '../types/app-request';
 import { useRepoStore } from '../store/useRepoStore';
+import { getSafeExternalHttpsUrl } from '../services/safe-url';
 
 function methodLabel(method: AppRequestRecord['method']) {
   if (method === 'direct-ipa') return 'Direct IPA';
@@ -45,7 +46,10 @@ export default function AppRequestsScreen() {
 
   const openSource = async (request: AppRequestRecord) => {
     try {
-      await Linking.openURL(request.sourceUrl || request.issueUrl);
+      const sourceUrl = getSafeExternalHttpsUrl(request.sourceUrl)
+        ?? getSafeExternalHttpsUrl(request.issueUrl);
+      if (!sourceUrl) throw new Error('unsafe URL');
+      await Linking.openURL(sourceUrl);
     } catch {
       Alert.alert('Could Not Open Request', 'This request has no usable source link.');
     }

@@ -1,7 +1,7 @@
 import * as Crypto from 'expo-crypto';
 import type { File as ExpoFile, UploadProgress } from 'expo-file-system';
 import { fetch } from 'expo/fetch';
-import { GITHUB_REPOSITORY } from './github-api';
+import { RELEASES_REPOSITORY } from './github-api';
 import { getStoredGitHubToken } from './secure-credentials';
 
 const GITHUB_API_URL = 'https://api.github.com';
@@ -83,7 +83,7 @@ function messageFromPayload(value: unknown): string | undefined {
 }
 
 function releaseApiPath(path: string) {
-  return `${GITHUB_API_URL}/repos/${encodeURIComponent(GITHUB_REPOSITORY.owner)}/${encodeURIComponent(GITHUB_REPOSITORY.name)}${path}`;
+  return `${GITHUB_API_URL}/repos/${encodeURIComponent(RELEASES_REPOSITORY.owner)}/${encodeURIComponent(RELEASES_REPOSITORY.name)}${path}`;
 }
 
 async function githubJson<T>(
@@ -178,7 +178,7 @@ async function ensurePublicUploadRelease(token: string): Promise<GitHubRelease &
         method: 'POST',
         body: JSON.stringify({
           tag_name: DIRECT_IPA_RELEASE_TAG,
-          target_commitish: GITHUB_REPOSITORY.branch,
+          target_commitish: RELEASES_REPOSITORY.branch,
           name: 'ryP0 Direct IPA Uploads',
           body: 'Public IPA assets uploaded from the authenticated ryP0 admin app.',
           draft: false,
@@ -249,7 +249,7 @@ async function uploadLocalIpa(
   const { UploadType } = loadFileSystem();
   const filename = uniqueAssetFilename(originalFilename);
   const query = new URLSearchParams({ name: filename, label: originalFilename });
-  const uploadUrl = `${GITHUB_UPLOADS_URL}/repos/${encodeURIComponent(GITHUB_REPOSITORY.owner)}/${encodeURIComponent(GITHUB_REPOSITORY.name)}/releases/${release.id}/assets?${query}`;
+  const uploadUrl = `${GITHUB_UPLOADS_URL}/repos/${encodeURIComponent(RELEASES_REPOSITORY.owner)}/${encodeURIComponent(RELEASES_REPOSITORY.name)}/releases/${release.id}/assets?${query}`;
   const uploadTask = file.createUploadTask(uploadUrl, {
     httpMethod: 'POST',
     uploadType: UploadType.BINARY_CONTENT,

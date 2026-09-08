@@ -1,6 +1,6 @@
 import { fetch } from 'expo/fetch';
 import type { AppUpdatePolicy, RepoApp, RepoAppStatus } from '../types/repo';
-import { GITHUB_REPOSITORY } from './github-api';
+import { AUTOMATION_REPOSITORY } from './github-api';
 import { getSafeExternalHttpsUrl } from './safe-url';
 
 // The repository workflow refreshes its persisted health snapshot every six
@@ -228,10 +228,10 @@ async function checkWorkflow(workflowPath: string | undefined, signal?: AbortSig
     return { state: 'failed', message: 'The configured daily-update workflow path is invalid.' };
   }
 
-  const owner = encodeURIComponent(GITHUB_REPOSITORY.owner);
-  const repository = encodeURIComponent(GITHUB_REPOSITORY.name);
+  const owner = encodeURIComponent(AUTOMATION_REPOSITORY.owner);
+  const repository = encodeURIComponent(AUTOMATION_REPOSITORY.name);
   const workflow = encodeURIComponent(filename);
-  const url = `https://api.github.com/repos/${owner}/${repository}/actions/workflows/${workflow}/runs?branch=${encodeURIComponent(GITHUB_REPOSITORY.branch)}&per_page=1&exclude_pull_requests=true`;
+  const url = `https://api.github.com/repos/${owner}/${repository}/actions/workflows/${workflow}/runs?branch=${encodeURIComponent(AUTOMATION_REPOSITORY.branch)}&per_page=1&exclude_pull_requests=true`;
 
   try {
     const response = await fetchWithTimeout(

@@ -1,5 +1,5 @@
 import { fetch } from 'expo/fetch';
-import { GITHUB_REPOSITORY, GitHubApiError } from './github-api';
+import { AUTOMATION_REPOSITORY, GitHubApiError } from './github-api';
 import { getStoredGitHubToken } from './secure-credentials';
 
 const GITHUB_API_URL = 'https://api.github.com';
@@ -129,7 +129,7 @@ function errorMessageFromPayload(payload: unknown): string | null {
 }
 
 function repositoryPath(suffix: string): string {
-  return `/repos/${encodeURIComponent(GITHUB_REPOSITORY.owner)}/${encodeURIComponent(GITHUB_REPOSITORY.name)}${suffix}`;
+  return `/repos/${encodeURIComponent(AUTOMATION_REPOSITORY.owner)}/${encodeURIComponent(AUTOMATION_REPOSITORY.name)}${suffix}`;
 }
 
 function normalizeWorkflowState(value: unknown): GitHubWorkflowState {
@@ -445,7 +445,7 @@ export async function getLatestGitHubWorkflowRun(workflowId: number): Promise<Gi
 export async function readGitHubWorkflowFile(workflowPath: string): Promise<GitHubWorkflowFile> {
   const path = assertWorkflowPath(workflowPath);
   const payload = await githubActionsRequest<GitHubContentResponse>(
-    repositoryPath(`/contents/${encodePath(path)}?ref=${encodeURIComponent(GITHUB_REPOSITORY.branch)}`),
+    repositoryPath(`/contents/${encodePath(path)}?ref=${encodeURIComponent(AUTOMATION_REPOSITORY.branch)}`),
   );
 
   if (
@@ -497,7 +497,7 @@ export async function saveGitHubWorkflowFile(
         message: commitMessage,
         content: utf8ToBase64(normalizedContent),
         sha: expectedSha.trim(),
-        branch: GITHUB_REPOSITORY.branch,
+        branch: AUTOMATION_REPOSITORY.branch,
       }),
     },
   );
@@ -523,7 +523,7 @@ export async function dispatchGitHubWorkflow(
   await githubActionsRequest<null>(repositoryPath(`/actions/workflows/${workflowId}/dispatches`), {
     method: 'POST',
     body: JSON.stringify({
-      ref: GITHUB_REPOSITORY.branch,
+      ref: AUTOMATION_REPOSITORY.branch,
       ...(normalizedInputs && Object.keys(normalizedInputs).length > 0 ? { inputs: normalizedInputs } : {}),
     }),
   });
@@ -555,7 +555,7 @@ export async function deleteGitHubWorkflowFile(
       body: JSON.stringify({
         message: commitMessage,
         sha: expectedSha.trim(),
-        branch: GITHUB_REPOSITORY.branch,
+        branch: AUTOMATION_REPOSITORY.branch,
       }),
     },
   );

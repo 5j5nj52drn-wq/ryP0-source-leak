@@ -2,13 +2,35 @@ import { fetch } from 'expo/fetch';
 import { RepoData } from '../types/repo';
 import { getSafeExternalHttpsUrl, isSafeExternalHttpsUrl } from './safe-url';
 
-export const GITHUB_REPOSITORY = {
-  owner: 'ry0-x',
-  name: 'ry0-x.github.io',
+/** Public catalog data. This repository intentionally contains no source or secrets. */
+export const CONTENT_REPOSITORY = {
+  owner: 'Sami-Wali',
+  name: 'ryP0-repository',
   branch: 'main',
   repoPath: 'repo.json',
   iconsPath: 'icons',
 } as const;
+
+/** Public IPA assets. Keeping releases separate prevents source archives leaking. */
+export const RELEASES_REPOSITORY = {
+  owner: 'Sami-Wali',
+  name: 'ryP0',
+  branch: 'main',
+} as const;
+
+/** Private workflows and server-side automation only. Never expose its token. */
+export const AUTOMATION_REPOSITORY = {
+  owner: 'Sami-Wali',
+  name: 'ryP0-automation',
+  branch: 'main',
+} as const;
+
+export const PUBLIC_REPOSITORY_MANIFEST_URL = 'https://raw.githubusercontent.com/Sami-Wali/ryP0-repository/main/repo.json';
+export const PUBLIC_ICON_BASE_URL = 'https://raw.githubusercontent.com/Sami-Wali/ryP0-repository/main/icons';
+
+// Content-oriented code imported this name before the repository split. Keep a
+// single alias so those calls cannot accidentally point at source or releases.
+export const GITHUB_REPOSITORY = CONTENT_REPOSITORY;
 
 // This CMS is intentionally single-admin. Repository write access is necessary
 // but not sufficient: only the project owner's verified GitHub identity may
@@ -341,12 +363,21 @@ export async function validateGitHubToken(token: string): Promise<ValidatedGitHu
     );
   }
 
-  const repositoryPath = `/repos/${encodeURIComponent(GITHUB_REPOSITORY.owner)}/${encodeURIComponent(GITHUB_REPOSITORY.name)}`;
-  const repository = await githubRequest<GitHubRepositoryResponse>(repositoryPath, normalizedToken);
+  const developerRepositories = [CONTENT_REPOSITORY, RELEASES_REPOSITORY, AUTOMATION_REPOSITORY] as const;
+  const repositories = await Promise.all(developerRepositories.map(async (target) => ({
+    target,
+    repository: await githubRequest<GitHubRepositoryResponse>(
+      `/repos/${encodeURIComponent(target.owner)}/${encodeURIComponent(target.name)}`,
+      normalizedToken,
+    ),
+  })));
+  const unavailable = repositories
+    .filter(({ repository }) => !repository.permissions?.push && !repository.permissions?.maintain && !repository.permissions?.admin)
+    .map(({ target }) => `${target.owner}/${target.name}`);
 
-  if (!repository.permissions?.push && !repository.permissions?.maintain && !repository.permissions?.admin) {
+  if (unavailable.length) {
     throw new GitHubApiError(
-      `@${user.login} does not have write access to ${GITHUB_REPOSITORY.owner}/${GITHUB_REPOSITORY.name}.`,
+      `@${user.login} needs write access to ${unavailable.join(', ')} before Developer Mode can be enabled.`,
       403,
       'INSUFFICIENT_PERMISSION',
     );

@@ -34,11 +34,10 @@ GitHub build. This follows Expo's
 
 ## API configuration
 
-Set the public endpoint URLs under **Settings → Secrets and variables →
-Actions → Variables** when their services have been deployed:
+Set the public control API URL under **Settings → Secrets and variables →
+Actions → Variables** when the private service has been deployed:
 
-- `EXPO_PUBLIC_REQUESTS_API_URL`
-- `EXPO_PUBLIC_IMPORT_API_URL` (optional synchronous Telegram import service)
+- `EXPO_PUBLIC_CONTROL_API_URL`
 
 These values are baked into the IPA. GitHub Actions does not read your local
 `.env` file or EAS project environment automatically; changing an endpoint
@@ -62,8 +61,9 @@ default branch. A separate job receives `contents: write` and creates a **draft*
 prerelease in the same repository with the IPA/checksum. Pushes and pull requests
 never publish a release. Review and publish a draft yourself if desired; there
 is no implicit upload to another public releases repository. GitHub creates
-source archives when a repository release is published, so use a separate public
-releases repository when distributing binaries from private source.
+source archives when a repository release is published, so use the separate
+public `Sami-Wali/ryP0` releases repository when distributing binaries from the
+private source repository.
 
 ## Run locally on a Mac
 

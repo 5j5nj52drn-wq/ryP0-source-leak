@@ -1,8 +1,8 @@
 import type { AppRequestMethod, AppRequestSubmission } from '../../types/app-request';
 import { getSafeExternalHttpsUrl } from '../../services/safe-url';
 
-const OWNER = 'ry0-x';
-const REPOSITORY = 'ry0-x.github.io';
+const OWNER = 'Sami-Wali';
+const REPOSITORY = 'ryP0-automation';
 const LABEL = 'app-request';
 const METHODS: readonly AppRequestMethod[] = ['updatable-source', 'direct-ipa', 'message-link'];
 const MAX_BODY_BYTES = 12_000;

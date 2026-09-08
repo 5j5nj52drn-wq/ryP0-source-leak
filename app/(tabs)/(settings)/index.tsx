@@ -95,7 +95,7 @@ export default function Settings() {
       token.value = '';
       Alert.alert(
         'Developer Mode Enabled',
-        `GitHub verified @${account?.login ?? 'your account'} has write access to ry0-x/ry0-x.github.io.`,
+        `GitHub verified @${account?.login ?? 'your account'} can manage the ryP0 catalog, releases, and private automation.`,
       );
     } catch (error: any) {
       Alert.alert('Authentication Failed', error?.message || 'GitHub could not verify this token.');
@@ -220,7 +220,7 @@ export default function Settings() {
             </Button>
           ) : null}
           <FieldGroup.SectionFooter>
-            <Text>Contents read/write is enough for repo.json. Workflow controls also require Actions/workflows write access (or a classic token with the workflow scope).</Text>
+            <Text>Developer Mode verifies write access to the separate catalog, releases, and private automation repositories. The saved credential is device-only and protected by Face ID when available.</Text>
             {authError ? <Text>{authError}</Text> : null}
           </FieldGroup.SectionFooter>
         </FieldGroup.Section>
@@ -251,7 +251,7 @@ export default function Settings() {
           </ListItem>
           <ListItem
             leading={<SettingsSymbol name="shield.fill" color={accentValue} />}
-            supportingText="A native iOS companion for the ry0-x app repository"
+            supportingText="A native iOS companion for the ryP0 public catalog and private automation"
           >
             <Text>ryP0</Text>
           </ListItem>

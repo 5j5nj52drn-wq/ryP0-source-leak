@@ -3,7 +3,7 @@ import type { RepoApp, RepoVersion } from '../types/repo';
 import { dispatchGitHubWorkflow, listGitHubWorkflows } from './github-workflows';
 import { getSafeExternalHttpsUrl, isSafeExternalHttpsUrl } from './safe-url';
 
-export const DEFAULT_ICON_URL = 'https://raw.githubusercontent.com/ry0-x/ry0-x.github.io/main/icons/ry0_.jpg';
+export const DEFAULT_ICON_URL = 'https://raw.githubusercontent.com/Sami-Wali/ryP0-repository/main/icons/ry0_.jpg';
 
 const REQUEST_TIMEOUT_MS = 20_000;
 // A large catalogue may contain thousands of apps and their complete version
@@ -409,7 +409,7 @@ export type TelegramImportInput = {
   bundleIdentifier?: string;
 };
 
-type TelegramImportResponse = { app?: unknown; error?: string };
+type TelegramImportResponse = { app?: unknown; queued?: boolean; workflowUrl?: string; error?: string };
 
 export type TelegramImportResult =
   | { kind: 'imported'; app: RepoApp }
@@ -518,14 +518,16 @@ export async function importTelegramApp(input: TelegramImportInput): Promise<Tel
     ...(bundleIdentifier ? { bundleIdentifier } : {}),
   };
 
-  const baseUrl = process.env.EXPO_PUBLIC_IMPORT_API_URL?.trim().replace(/\/$/, '');
+  const controlApiUrl = process.env.EXPO_PUBLIC_CONTROL_API_URL?.trim().replace(/\/$/, '');
+  const legacyImportApiUrl = process.env.EXPO_PUBLIC_IMPORT_API_URL?.trim().replace(/\/$/, '');
+  const baseUrl = controlApiUrl || legacyImportApiUrl;
   if (!baseUrl) {
     return queueTelegramWorkflow(workflowInput);
   }
   const endpoint = normalizeHttpsUrl(baseUrl, 'Telegram import service');
   let response: TelegramImportResponse;
   try {
-    response = await fetchJson<TelegramImportResponse>(`${endpoint}/api/telegram-import`, {
+    response = await fetchJson<TelegramImportResponse>(`${endpoint}${controlApiUrl ? '/v1/imports/telegram' : '/api/telegram-import'}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -549,6 +551,14 @@ export async function importTelegramApp(input: TelegramImportInput): Promise<Tel
       return queueTelegramWorkflow(workflowInput);
     }
     throw error;
+  }
+  if (response.queued) {
+    return {
+      kind: 'queued',
+      ...(typeof response.workflowUrl === 'string' && isSafeExternalHttpsUrl(response.workflowUrl)
+        ? { workflowUrl: response.workflowUrl }
+        : {}),
+    };
   }
   const app = normalizeRemoteApp(response.app);
   if (!app) {

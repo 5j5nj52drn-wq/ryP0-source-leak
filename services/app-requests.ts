@@ -12,8 +12,8 @@ export class AppRequestsError extends Error {
 
 const REQUEST_TIMEOUT_MS = 15_000;
 const GITHUB_API_URL = 'https://api.github.com';
-const REQUEST_OWNER = 'ry0-x';
-const REQUEST_REPOSITORY = 'ry0-x.github.io';
+const REQUEST_OWNER = 'Sami-Wali';
+const REQUEST_REPOSITORY = 'ryP0-automation';
 const REQUEST_LABEL = 'app-request';
 
 type GitHubIssue = {
@@ -29,14 +29,15 @@ type GitHubIssue = {
 export type AppRequestSubmissionResult = { kind: 'submitted'; request: AppRequestRecord };
 
 function endpoint(): string {
-  // This deliberately has no guessed public fallback. A stale or unclaimed
-  // hostname makes requests silently disappear (or send them to the wrong
-  // service) on a real device. The deployed HTTPS endpoint is public build
-  // configuration and must be supplied when an IPA is built.
-  const baseUrl = process.env.EXPO_PUBLIC_REQUESTS_API_URL?.trim().replace(/\/$/, '');
+  // The control API URL is safe to ship, but its credentials stay private.
+  // Keep the older request-only variable as a short migration path for an
+  // already deployed service; never invent a fallback hostname.
+  const controlApiUrl = process.env.EXPO_PUBLIC_CONTROL_API_URL?.trim().replace(/\/$/, '');
+  const legacyRequestsApiUrl = process.env.EXPO_PUBLIC_REQUESTS_API_URL?.trim().replace(/\/$/, '');
+  const baseUrl = controlApiUrl || legacyRequestsApiUrl;
   if (!baseUrl) {
     throw new AppRequestsError(
-      'App requests are temporarily unavailable because the request service has not been deployed yet.',
+      'App requests are temporarily unavailable because the private control service has not been deployed yet.',
     );
   }
 
@@ -52,6 +53,9 @@ function endpoint(): string {
     throw new AppRequestsError('App requests must use a secure HTTPS endpoint.');
   }
   const normalized = url.toString().replace(/\/$/, '');
+  if (controlApiUrl) {
+    return normalized.endsWith('/v1/app-requests') ? normalized : `${normalized}/v1/app-requests`;
+  }
   return normalized.endsWith('/api/app-requests') ? normalized : `${normalized}/api/app-requests`;
 }
 

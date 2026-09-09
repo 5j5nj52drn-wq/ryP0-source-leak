@@ -1,13 +1,13 @@
 import * as Crypto from 'expo-crypto';
 import type { File as ExpoFile, UploadProgress } from 'expo-file-system';
 import { fetch } from 'expo/fetch';
-import { RELEASES_REPOSITORY } from './github-api';
+import { SOURCE_REPOSITORY } from './github-api';
 import { getStoredGitHubToken } from './secure-credentials';
 
 const GITHUB_API_URL = 'https://api.github.com';
 const GITHUB_UPLOADS_URL = 'https://uploads.github.com';
 const GITHUB_API_VERSION = '2026-03-10';
-const DIRECT_IPA_RELEASE_TAG = 'ryp0-direct-ipa-uploads';
+const PRIVATE_IPA_STAGING_RELEASE_TAG = 'ryp0-ipa-staging';
 const MAX_RELEASE_ASSET_BYTES = 2 * 1024 * 1024 * 1024;
 const METADATA_TIMEOUT_MS = 30_000;
 
@@ -32,7 +32,9 @@ type GitHubReleaseAsset = {
 export type IpaUploadProgress = UploadProgress;
 
 export type IpaUploadResult = {
-  browserDownloadUrl: string;
+  /** Private staging location; it is not a user-installable public URL. */
+  uploadRepository: string;
+  stagingReleaseTag: string;
   filename: string;
   originalFilename: string;
   size: number;
@@ -83,7 +85,7 @@ function messageFromPayload(value: unknown): string | undefined {
 }
 
 function releaseApiPath(path: string) {
-  return `${GITHUB_API_URL}/repos/${encodeURIComponent(RELEASES_REPOSITORY.owner)}/${encodeURIComponent(RELEASES_REPOSITORY.name)}${path}`;
+  return `${GITHUB_API_URL}/repos/${encodeURIComponent(SOURCE_REPOSITORY.owner)}/${encodeURIComponent(SOURCE_REPOSITORY.name)}${path}`;
 }
 
 async function githubJson<T>(
@@ -155,7 +157,7 @@ function assertRelease(value: GitHubRelease): GitHubRelease & { id: number } {
 async function getUploadRelease(token: string): Promise<(GitHubRelease & { id: number }) | null> {
   try {
     const release = await githubJson<GitHubRelease>(
-      releaseApiPath(`/releases/tags/${encodeURIComponent(DIRECT_IPA_RELEASE_TAG)}`),
+      releaseApiPath(`/releases/tags/${encodeURIComponent(PRIVATE_IPA_STAGING_RELEASE_TAG)}`),
       token,
     );
     return assertRelease(release);
@@ -165,10 +167,10 @@ async function getUploadRelease(token: string): Promise<(GitHubRelease & { id: n
   }
 }
 
-async function ensurePublicUploadRelease(token: string): Promise<GitHubRelease & { id: number }> {
+async function ensurePrivateUploadRelease(token: string): Promise<GitHubRelease & { id: number }> {
   const repository = await githubJson<GitHubRepositoryDetails>(releaseApiPath(''), token);
-  if (repository.private !== false) {
-    throw new IpaUploadError('Direct IPA links require the configured GitHub repository to be public.');
+  if (repository.private !== true) {
+    throw new IpaUploadError('IPA staging must use the private ryP0-source repository.');
   }
 
   let release = await getUploadRelease(token);
@@ -177,12 +179,15 @@ async function ensurePublicUploadRelease(token: string): Promise<GitHubRelease &
       release = assertRelease(await githubJson<GitHubRelease>(releaseApiPath('/releases'), token, {
         method: 'POST',
         body: JSON.stringify({
-          tag_name: DIRECT_IPA_RELEASE_TAG,
-          target_commitish: RELEASES_REPOSITORY.branch,
-          name: 'ryP0 Direct IPA Uploads',
-          body: 'Public IPA assets uploaded from the authenticated ryP0 admin app.',
+          tag_name: PRIVATE_IPA_STAGING_RELEASE_TAG,
+          target_commitish: SOURCE_REPOSITORY.branch,
+          name: 'ryP0 IPA validation staging',
+          body: 'Temporary private IPA assets uploaded by the authenticated ryP0 admin app. The private importer validates and republishes only approved IPA files.',
+          // The repository itself is private. Keeping this prerelease visible
+          // to its read-only GitHub App token avoids a draft-release access
+          // mismatch while still keeping the raw IPA inaccessible to users.
           draft: false,
-          prerelease: false,
+          prerelease: true,
         }),
       }));
     } catch (error) {
@@ -192,13 +197,6 @@ async function ensurePublicUploadRelease(token: string): Promise<GitHubRelease &
       release = await getUploadRelease(token);
       if (!release) throw error;
     }
-  }
-
-  if (release.draft) {
-    release = assertRelease(await githubJson<GitHubRelease>(releaseApiPath(`/releases/${release.id}`), token, {
-      method: 'PATCH',
-      body: JSON.stringify({ draft: false, prerelease: false }),
-    }));
   }
 
   return release;
@@ -245,11 +243,11 @@ async function uploadLocalIpa(
   options: { signal?: AbortSignal; onProgress?: (progress: IpaUploadProgress) => void },
 ): Promise<IpaUploadResult> {
   const size = validateLocalFile(file);
-  const release = await ensurePublicUploadRelease(token);
+  const release = await ensurePrivateUploadRelease(token);
   const { UploadType } = loadFileSystem();
   const filename = uniqueAssetFilename(originalFilename);
   const query = new URLSearchParams({ name: filename, label: originalFilename });
-  const uploadUrl = `${GITHUB_UPLOADS_URL}/repos/${encodeURIComponent(RELEASES_REPOSITORY.owner)}/${encodeURIComponent(RELEASES_REPOSITORY.name)}/releases/${release.id}/assets?${query}`;
+  const uploadUrl = `${GITHUB_UPLOADS_URL}/repos/${encodeURIComponent(SOURCE_REPOSITORY.owner)}/${encodeURIComponent(SOURCE_REPOSITORY.name)}/releases/${release.id}/assets?${query}`;
   const uploadTask = file.createUploadTask(uploadUrl, {
     httpMethod: 'POST',
     uploadType: UploadType.BINARY_CONTENT,
@@ -294,23 +292,25 @@ async function uploadLocalIpa(
   if (
     !asset ||
     asset.state !== 'uploaded' ||
-    typeof asset.browser_download_url !== 'string' ||
-    !asset.browser_download_url.startsWith('https://github.com/')
+    typeof asset.name !== 'string' ||
+    !asset.name
   ) {
-    throw new IpaUploadError('GitHub accepted the IPA but did not return a public download URL.');
+    throw new IpaUploadError('GitHub accepted the IPA but did not return private staging metadata.');
   }
 
   return {
-    browserDownloadUrl: asset.browser_download_url,
-    filename: typeof asset.name === 'string' && asset.name ? asset.name : filename,
+    uploadRepository: `${SOURCE_REPOSITORY.owner}/${SOURCE_REPOSITORY.name}`,
+    stagingReleaseTag: PRIVATE_IPA_STAGING_RELEASE_TAG,
+    filename: asset.name,
     originalFilename,
     size: typeof asset.size === 'number' && asset.size > 0 ? asset.size : size,
   };
 }
 
 /**
- * Presents the system document picker, streams the selected IPA directly to a
- * public GitHub release, then removes only the temporary cache copy.
+ * Presents the system document picker, streams the selected IPA to a private
+ * staging release, then removes only the temporary cache copy. A protected
+ * workflow validates it before any public IPA asset or repo.json entry exists.
  */
 export async function pickAndUploadIpa(options: {
   signal?: AbortSignal;

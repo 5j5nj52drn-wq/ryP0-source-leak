@@ -108,10 +108,10 @@ export function useIpaUploader(onUploaded: (result: IpaUploadResult) => void) {
       return `${filename || 'IPA'}${fileSize ? ` · ${formatFileSize(fileSize)}` : ''} · ${percent}%`;
     }
     if (phase === 'success') {
-      return `${filename}${fileSize ? ` · ${formatFileSize(fileSize)}` : ''} · Direct IPA URL filled in.`;
+      return `${filename}${fileSize ? ` · ${formatFileSize(fileSize)}` : ''} · Privately staged and ready for validation.`;
     }
     if (phase === 'error') return errorMessage;
-    return 'Creates a public GitHub release asset using your saved admin credential.';
+    return 'Uploads to private staging with your saved admin credential. It is not public until the protected importer validates it.';
   }, [errorMessage, fileSize, filename, phase, progress]);
 
   return {

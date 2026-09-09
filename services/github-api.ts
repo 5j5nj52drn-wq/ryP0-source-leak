@@ -18,6 +18,13 @@ export const RELEASES_REPOSITORY = {
   branch: 'main',
 } as const;
 
+/** Private Expo source and short-lived IPA staging assets. */
+export const SOURCE_REPOSITORY = {
+  owner: 'Sami-Wali',
+  name: 'ryP0-source',
+  branch: 'main',
+} as const;
+
 /** Private workflows and server-side automation only. Never expose its token. */
 export const AUTOMATION_REPOSITORY = {
   owner: 'Sami-Wali',
@@ -363,7 +370,7 @@ export async function validateGitHubToken(token: string): Promise<ValidatedGitHu
     );
   }
 
-  const developerRepositories = [CONTENT_REPOSITORY, RELEASES_REPOSITORY, AUTOMATION_REPOSITORY] as const;
+  const developerRepositories = [CONTENT_REPOSITORY, RELEASES_REPOSITORY, SOURCE_REPOSITORY, AUTOMATION_REPOSITORY] as const;
   const repositories = await Promise.all(developerRepositories.map(async (target) => ({
     target,
     repository: await githubRequest<GitHubRepositoryResponse>(

@@ -28,14 +28,21 @@ type GitHubIssue = {
 
 export type AppRequestSubmissionResult = { kind: 'submitted'; request: AppRequestRecord };
 
+export interface AppRequestApprovalResult {
+  request: {
+    id: number;
+    state: 'queued';
+    importMethod: AppRequestMethod;
+    category: string;
+  };
+}
+
 function endpoint(): string {
   // The control API URL is safe to ship, but its credentials stay private.
-  // Keep the older request-only variable as a short migration path for an
-  // already deployed service; never invent a fallback hostname.
+  // Do not fall back to the old Expo API route: it relied on a source-repo
+  // server token and could bypass the private approval boundary.
   const controlApiUrl = process.env.EXPO_PUBLIC_CONTROL_API_URL?.trim().replace(/\/$/, '');
-  const legacyRequestsApiUrl = process.env.EXPO_PUBLIC_REQUESTS_API_URL?.trim().replace(/\/$/, '');
-  const baseUrl = controlApiUrl || legacyRequestsApiUrl;
-  if (!baseUrl) {
+  if (!controlApiUrl) {
     throw new AppRequestsError(
       'App requests are temporarily unavailable because the private control service has not been deployed yet.',
     );
@@ -43,9 +50,9 @@ function endpoint(): string {
 
   let url: URL;
   try {
-    url = new URL(baseUrl);
+    url = new URL(controlApiUrl);
   } catch {
-    throw new AppRequestsError('EXPO_PUBLIC_REQUESTS_API_URL must be a valid HTTPS URL.');
+    throw new AppRequestsError('EXPO_PUBLIC_CONTROL_API_URL must be a valid HTTPS URL.');
   }
 
   const isLocalDevelopmentHost = url.hostname === 'localhost' || url.hostname === '127.0.0.1';
@@ -53,10 +60,35 @@ function endpoint(): string {
     throw new AppRequestsError('App requests must use a secure HTTPS endpoint.');
   }
   const normalized = url.toString().replace(/\/$/, '');
-  if (controlApiUrl) {
-    return normalized.endsWith('/v1/app-requests') ? normalized : `${normalized}/v1/app-requests`;
+  return normalized.endsWith('/v1/app-requests') ? normalized : `${normalized}/v1/app-requests`;
+}
+
+function approvalEndpoint(issueNumber: number): string {
+  if (!Number.isSafeInteger(issueNumber) || issueNumber <= 0) {
+    throw new AppRequestsError('Choose a valid app request.');
   }
-  return normalized.endsWith('/api/app-requests') ? normalized : `${normalized}/api/app-requests`;
+
+  const controlApiUrl = process.env.EXPO_PUBLIC_CONTROL_API_URL?.trim().replace(/\/$/, '');
+  if (!controlApiUrl) {
+    throw new AppRequestsError(
+      'Approving requests requires the private control service to be deployed first.',
+    );
+  }
+
+  let url: URL;
+  try {
+    url = new URL(controlApiUrl);
+  } catch {
+    throw new AppRequestsError('EXPO_PUBLIC_CONTROL_API_URL must be a valid HTTPS URL.');
+  }
+
+  const isLocalDevelopmentHost = url.hostname === 'localhost' || url.hostname === '127.0.0.1';
+  if (url.protocol !== 'https:' && !(isLocalDevelopmentHost && __DEV__)) {
+    throw new AppRequestsError('Request approval must use a secure HTTPS endpoint.');
+  }
+
+  const baseUrl = url.toString().replace(/\/$/, '');
+  return `${baseUrl}/v1/admin/app-requests/${issueNumber}/approve`;
 }
 
 async function request<T>(endpointUrl: string, init?: RequestInit): Promise<T> {
@@ -100,11 +132,13 @@ function requestFromIssue(issue: GitHubIssue): AppRequestRecord {
   const findField = (label: string) => body.match(new RegExp(`\\*\\*${label}:\\*\\*\\s*(.+)`))?.[1]?.trim() || '';
   const sourceUrl = findField('Source').replace(/^<|>$/g, '');
   const methodLabel = findField('Submission method');
-  const method: AppRequestMethod = methodLabel === 'Direct IPA download'
-    ? 'direct-ipa'
-    : methodLabel === 'Message / Telegram link'
-      ? 'message-link'
-      : 'updatable-source';
+  const method: AppRequestMethod = methodLabel === 'Direct IPA download' || methodLabel === 'Direct URL'
+    ? 'direct-url'
+    : methodLabel === 'Telegram / R2 import' || methodLabel === 'Message / Telegram link'
+      ? 'telegram-r2'
+      : methodLabel === 'Another app repository' || methodLabel === 'Repository / Source.JSON import'
+        ? 'repository'
+        : 'github';
   const unescapeMarkdown = (value: string) => value.replace(/\\([\\`*_{}[\]<>])/g, '$1');
 
   return {
@@ -195,4 +229,39 @@ export async function fetchAppRequests(): Promise<AppRequestRecord[]> {
     throw new AppRequestsError('Developer credentials are unavailable. Sign in again in Settings.');
   }
   return fetchDeveloperInbox(token);
+}
+
+/**
+ * The GitHub token comes from this administrator's device Keychain and is
+ * used by the private Worker only to verify the GitHub identity. It is never
+ * embedded in the IPA, returned by the Worker, forwarded to Actions, or
+ * written to an issue. The Worker dispatches its one fixed importer with a
+ * separate GitHub App identity.
+ */
+export async function approveAppRequest(
+  appRequest: Pick<AppRequestRecord, 'id' | 'method' | 'category'>,
+  note = '',
+): Promise<AppRequestApprovalResult> {
+  const token = await getStoredGitHubToken();
+  if (!token?.trim()) {
+    throw new AppRequestsError('Developer credentials are unavailable. Sign in again in Settings.');
+  }
+
+  const payload = await request<AppRequestApprovalResult>(approvalEndpoint(appRequest.id), {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token.trim()}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      method: appRequest.method,
+      category: appRequest.category.trim(),
+      ...(note.trim() ? { note: note.trim().slice(0, 1_000) } : {}),
+    }),
+  });
+
+  if (!payload?.request || payload.request.id !== appRequest.id || payload.request.state !== 'queued') {
+    throw new AppRequestsError('The private control service returned an invalid approval response.');
+  }
+  return payload;
 }

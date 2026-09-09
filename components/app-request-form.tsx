@@ -8,9 +8,10 @@ import { scrollDisabled } from '@expo/ui/swift-ui/modifiers';
 import { getSafeExternalHttpsUrl } from '../services/safe-url';
 
 const METHOD_LABELS: Record<AppRequestMethod, string> = {
-  'updatable-source': 'Updatable source',
-  'direct-ipa': 'Direct IPA download',
-  'message-link': 'Message / Telegram link',
+  github: 'GitHub project or release',
+  repository: 'Another app repository',
+  'direct-url': 'Direct IPA download',
+  'telegram-r2': 'Telegram / R2 import',
 };
 
 const REQUEST_CATEGORIES = [
@@ -27,7 +28,7 @@ export default function AppRequestForm() {
   const description = useNativeState('');
   const sourceUrl = useNativeState('');
   const [category, setCategory] = useState<(typeof REQUEST_CATEGORIES)[number]>('Sideloading');
-  const [method, setMethod] = useState<AppRequestMethod>('updatable-source');
+  const [method, setMethod] = useState<AppRequestMethod>('github');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const submitLock = useRef(false);
   const { height: viewportHeight, fontScale } = useWindowDimensions();
@@ -67,7 +68,7 @@ export default function AppRequestForm() {
       description.value = '';
       setCategory('Sideloading');
       sourceUrl.value = '';
-      setMethod('updatable-source');
+      setMethod('github');
       Alert.alert('Request Sent', 'Your app request has been sent to the repository developer for review.');
     } catch (error: any) {
       Alert.alert('Could Not Send Request', error?.message || 'Try again when you are connected.');
@@ -132,13 +133,13 @@ export default function AppRequestForm() {
               <TextInput
                 value={sourceUrl}
                 onChangeText={change(sourceUrl)}
-                placeholder={method === 'direct-ipa' ? 'https://example.com/app.ipa' : 'https://source.example.com'}
+                placeholder={method === 'direct-url' ? 'https://example.com/app.ipa' : method === 'telegram-r2' ? 'https://t.me/channel/123' : 'https://source.example.com'}
                 autoCapitalize="none"
                 keyboardType="url"
               />
               <FieldGroup.SectionFooter>
                 <Text>
-                  Use an updateable project or release link when possible. Direct IPA and Telegram/message links are accepted for review.
+                  Requests are reviewed before import. Use a GitHub project, repository JSON, direct IPA URL, or public Telegram message link.
                 </Text>
               </FieldGroup.SectionFooter>
             </FieldGroup.Section>

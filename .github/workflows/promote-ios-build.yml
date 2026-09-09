@@ -36,18 +36,30 @@ jobs:
     # there. They must not be copied into an iOS bundle or a public repository.
     environment: production
     steps:
-      - name: Create short-lived GitHub App token
-        id: app-token
+      - name: Create short-lived source artifact reader token
+        id: source-token
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
         with:
           app-id: ${{ secrets.GITHUB_APP_ID }}
           private-key: ${{ secrets.GITHUB_APP_PRIVATE_KEY }}
           owner: Sami-Wali
-          repositories: ryP0-source,ryP0
+          repositories: ryP0-source
+          permission-actions: read
+          permission-contents: read
+
+      - name: Create short-lived public release publisher token
+        id: publisher-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.GITHUB_APP_ID }}
+          private-key: ${{ secrets.GITHUB_APP_PRIVATE_KEY }}
+          owner: Sami-Wali
+          repositories: ryP0
+          permission-contents: write
 
       - name: Download and verify the Xcode artifact
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.source-token.outputs.token }}
           SOURCE_RUN_ID: ${{ inputs.source_run_id }}
           SOURCE_REPOSITORY: ${{ github.repository }}
         run: |
@@ -66,7 +78,7 @@ jobs:
 
       - name: Publish only the IPA and checksum
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.publisher-token.outputs.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
           PRERELEASE: ${{ inputs.prerelease }}
         run: |

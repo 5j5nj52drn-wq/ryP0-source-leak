@@ -1,7 +1,7 @@
 import { fetch } from 'expo/fetch';
 import type { RepoApp, RepoVersion } from '../types/repo';
-import { dispatchGitHubWorkflow, listGitHubWorkflows } from './github-workflows';
 import { getSafeExternalHttpsUrl, isSafeExternalHttpsUrl } from './safe-url';
+import { queuePrivateImport } from './private-imports';
 
 export const DEFAULT_ICON_URL = 'https://raw.githubusercontent.com/Sami-Wali/ryP0-repository/main/icons/ry0_.jpg';
 
@@ -630,13 +630,7 @@ export type TelegramImportInput = {
   bundleIdentifier?: string;
 };
 
-type TelegramImportResponse = { app?: unknown; queued?: boolean; workflowUrl?: string; error?: string };
-
-export type TelegramImportResult =
-  | { kind: 'imported'; app: RepoApp }
-  | { kind: 'queued'; workflowUrl?: string };
-
-const TELEGRAM_IMPORT_WORKFLOW_PATH = '.github/workflows/telegram_fetch.yml';
+export type TelegramImportResult = { kind: 'queued'; workflowUrl?: string };
 
 function normalizeTelegramSource(value: string) {
   const sourceUrl = normalizeHttpsUrl(value, 'Telegram message link');
@@ -672,44 +666,32 @@ async function queueTelegramWorkflow(input: {
   description: string;
   category: string;
   sourceUrl: string;
-  channelUsername: string;
   iconURL?: string;
   developerName?: string;
   bundleIdentifier?: string;
 }): Promise<TelegramImportResult> {
-  const workflows = await listGitHubWorkflows();
-  const workflow = workflows.find((candidate) => candidate.path === TELEGRAM_IMPORT_WORKFLOW_PATH);
-  if (!workflow) {
-    throw new ImportSourceError('The Telegram importer workflow is missing from GitHub.');
-  }
-  if (workflow.state !== 'active') {
-    throw new ImportSourceError('The Telegram importer workflow is disabled. Enable it in Manage Apps first.');
-  }
-
-  const optionalInputs = {
-    icon_url: input.iconURL,
-    developer_name: input.developerName,
-    bundle_identifier: input.bundleIdentifier,
-  };
-  await dispatchGitHubWorkflow(workflow.id, {
-    source_url: input.sourceUrl,
-    channel_username: input.channelUsername,
-    app_name: input.name,
+  const queued = await queuePrivateImport({
+    method: 'telegram-r2',
+    sourceUrl: input.sourceUrl,
+    appName: input.name,
     description: input.description,
     category: input.category,
-    ...Object.fromEntries(
-      Object.entries(optionalInputs).filter((entry): entry is [string, string] => Boolean(entry[1])),
-    ),
+    iconUrl: input.iconURL,
+    developerName: input.developerName,
+    expectedBundleIdentifier: input.bundleIdentifier,
+    archiveToR2: true,
   });
   return {
     kind: 'queued',
-    ...(workflow.htmlUrl ? { workflowUrl: workflow.htmlUrl } : {}),
+    ...queued,
   };
 }
 
 /**
- * Telegram/R2 processing is deliberately delegated to a protected backend. The
- * client never receives the Telegram session or Cloudflare R2 credentials.
+ * Telegram/R2 processing is deliberately delegated to the protected private
+ * workflow. The client only authenticates its own workflow dispatch; it never
+ * receives the Telegram session, R2 credential, GitHub App key, or catalog
+ * publisher credential.
  */
 export async function importTelegramApp(input: TelegramImportInput): Promise<TelegramImportResult> {
   const name = cleanString(input.name, 120);
@@ -733,57 +715,10 @@ export async function importTelegramApp(input: TelegramImportInput): Promise<Tel
     description,
     category,
     sourceUrl: telegramSource.sourceUrl,
-    channelUsername: telegramSource.channelUsername,
     ...(iconURL ? { iconURL } : {}),
     ...(developerName ? { developerName } : {}),
     ...(bundleIdentifier ? { bundleIdentifier } : {}),
   };
 
-  const controlApiUrl = process.env.EXPO_PUBLIC_CONTROL_API_URL?.trim().replace(/\/$/, '');
-  const legacyImportApiUrl = process.env.EXPO_PUBLIC_IMPORT_API_URL?.trim().replace(/\/$/, '');
-  const baseUrl = controlApiUrl || legacyImportApiUrl;
-  if (!baseUrl) {
-    return queueTelegramWorkflow(workflowInput);
-  }
-  const endpoint = normalizeHttpsUrl(baseUrl, 'Telegram import service');
-  let response: TelegramImportResponse;
-  try {
-    response = await fetchJson<TelegramImportResponse>(`${endpoint}${controlApiUrl ? '/v1/imports/telegram' : '/api/telegram-import'}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        ...input,
-        name,
-        description,
-        category,
-        sourceUrl: telegramSource.sourceUrl,
-        ...(iconURL ? { iconURL } : {}),
-      }),
-    });
-  } catch (error) {
-    // A deployed Expo route can explicitly report that its optional Python
-    // worker is absent. Only that deterministic failure is safe to retry via
-    // Actions; ambiguous timeouts/5xx errors could otherwise duplicate work.
-    if (
-      error instanceof ImportSourceError &&
-      error.status === 503 &&
-      /not configured/i.test(error.message)
-    ) {
-      return queueTelegramWorkflow(workflowInput);
-    }
-    throw error;
-  }
-  if (response.queued) {
-    return {
-      kind: 'queued',
-      ...(typeof response.workflowUrl === 'string' && isSafeExternalHttpsUrl(response.workflowUrl)
-        ? { workflowUrl: response.workflowUrl }
-        : {}),
-    };
-  }
-  const app = normalizeRemoteApp(response.app);
-  if (!app) {
-    throw new ImportSourceError(response.error || 'The Telegram service returned an invalid app record.');
-  }
-  return { kind: 'imported', app };
+  return queueTelegramWorkflow(workflowInput);
 }

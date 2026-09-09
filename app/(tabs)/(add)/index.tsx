@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Alert,
-  Linking,
   ScrollView,
   StyleSheet,
   Text,
@@ -15,17 +14,13 @@ import { Image } from 'expo-image';
 import { Stack, useRouter } from 'expo-router';
 import { useRepoStore } from '../../../store/useRepoStore';
 import type { RepoApp } from '../../../types/repo';
-import type { AppRequestRecord } from '../../../types/app-request';
-import { fetchAppRequests } from '../../../services/app-requests';
-import { getSafeExternalHttpsUrl } from '../../../services/safe-url';
 import {
-  DEFAULT_ICON_URL,
   extractRepositoryApps,
-  importLatestGitHubRelease,
   importTelegramApp,
   ImportSourceError,
   normalizeHttpsUrl,
 } from '../../../services/import-sources';
+import { queuePrivateImport } from '../../../services/private-imports';
 import { ACCENT_COLORS, useAppTheme } from '../../../theme/app-preferences';
 import AppCategoryTabs from '../../../components/app-category-tabs';
 import AppRequestForm from '../../../components/app-request-form';
@@ -62,27 +57,6 @@ type ImportMethod = (typeof IMPORT_METHODS)[number]['id'];
 type IconTarget = 'direct' | 'github' | 'telegram';
 type Theme = ReturnType<typeof useAppTheme>;
 
-function makeSlug(value: string) {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 80) || 'app';
-}
-
-// Direct files do not reliably expose a bundle identifier until a server-side
-// IPA inspection step exists. Make the temporary repository identifier stable
-// per URL so two differently hosted apps with the same display name cannot
-// collide, while re-adding the exact same URL still selects the same record.
-function directLinkIdentifier(value: string) {
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return (hash >>> 0).toString(16);
-}
-
-function today() {
-  return new Date().toISOString().slice(0, 10);
-}
-
 function normalizedCategory(value?: string) {
   const match = CATEGORIES.find((category) => category.id.toLowerCase() === value?.trim().toLowerCase());
   return match?.id || 'Sideloading';
@@ -97,20 +71,6 @@ function prepareNewImport(app: RepoApp): RepoApp {
     updatePolicy: app.updatePolicy || 'static',
     status: { state: 'unknown' },
   };
-}
-
-function recommendationFor(request: AppRequestRecord): { method: ImportMethod; label: string; detail: string } {
-  const source = request.sourceUrl.toLowerCase();
-  if (request.method === 'direct-ipa' || source.includes('.ipa')) {
-    return { method: 'direct', label: 'Direct IPA', detail: 'This request includes a direct IPA link.' };
-  }
-  if (request.method === 'message-link' || source.includes('t.me/') || source.includes('telegram.me/')) {
-    return { method: 'telegram', label: 'Telegram', detail: 'Process the message link through the protected Telegram/R2 importer.' };
-  }
-  if (source.endsWith('.json') || source.includes('repo.json')) {
-    return { method: 'repo', label: 'Repo', detail: 'Review this repo, select its apps, and set a category for each before merging.' };
-  }
-  return { method: 'github', label: 'GitHub', detail: 'Fetch its latest GitHub release and inspect the IPA before committing.' };
 }
 
 function FormField({ label, theme, ...props }: TextInputProps & { label: string; theme: Theme }) {
@@ -188,8 +148,6 @@ function IconPickerRow({
 export default function AddAppTabScreen() {
   const router = useRouter();
   const repo = useRepoStore((state) => state.repo);
-  const reorderApps = useRepoStore((state) => state.reorderApps);
-  const commitChanges = useRepoStore((state) => state.commitChanges);
   const fetchRepo = useRepoStore((state) => state.fetchRepo);
   const isDeveloperMode = useRepoStore((state) => state.isDeveloperMode);
   const accentColor = useRepoStore((state) => state.accentColor);
@@ -209,8 +167,11 @@ export default function AddAppTabScreen() {
   const [directDescription, setDirectDescription] = useState('');
   const [directIconUrl, setDirectIconUrl] = useState('');
   const [directCategory, setDirectCategory] = useState('Sideloading');
-  const [directUploadSize, setDirectUploadSize] = useState(0);
   const [directUploaderGeneration, setDirectUploaderGeneration] = useState(0);
+  // A file selected on the device is first placed in the private source
+  // repository.  Keep its opaque staging reference separate from a public
+  // direct URL so it can never accidentally be published before validation.
+  const [stagedIpa, setStagedIpa] = useState<IpaUploadResult | null>(null);
 
   const [githubRepository, setGithubRepository] = useState('');
   const [githubName, setGithubName] = useState('');
@@ -229,10 +190,6 @@ export default function AddAppTabScreen() {
   const [telegramBundleId, setTelegramBundleId] = useState('');
   const [telegramIconUrl, setTelegramIconUrl] = useState('');
   const [telegramCategory, setTelegramCategory] = useState('Sideloading');
-
-  const [requests, setRequests] = useState<AppRequestRecord[]>([]);
-  const [isLoadingRequests, setIsLoadingRequests] = useState(false);
-  const [requestsError, setRequestsError] = useState<string | null>(null);
 
   const categoryCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -257,44 +214,9 @@ export default function AddAppTabScreen() {
     router.push('/icons?mode=select');
   }, [router]);
 
-  const persistApps = useCallback(async (apps: RepoApp[], title: string, message: string) => {
-    if (!repo) {
-      Alert.alert('Repository Unavailable', 'Refresh the Apps page before adding an app.');
-      return false;
-    }
-    setIsSaving(true);
-    reorderApps(apps);
-    try {
-      await commitChanges();
-      Alert.alert(title, message);
-      return true;
-    } catch (error: any) {
-      Alert.alert(
-        'Could Not Save to GitHub',
-        error?.message || 'The change remains in memory but has not been committed. Refresh before retrying.',
-      );
-      return false;
-    } finally {
-      setIsSaving(false);
-    }
-  }, [commitChanges, reorderApps, repo]);
-
-  const saveOneApp = useCallback(async (app: RepoApp, title: string) => {
-    if (!repo) {
-      Alert.alert('Repository Unavailable', 'Refresh the Apps page before adding an app.');
-      return false;
-    }
-    if (repo.apps.some((existing) => existing.bundleIdentifier === app.bundleIdentifier)) {
-      Alert.alert('Already Added', app.name + ' already exists in repo.json. Edit the existing app instead of duplicating it.');
-      return false;
-    }
-    const importedApp = prepareNewImport(app);
-    return persistApps([importedApp, ...repo.apps], title, app.name + ' was committed to repo.json.');
-  }, [persistApps, repo]);
-
   const handleIpaUploaded = useCallback((result: IpaUploadResult) => {
-    setDirectUrl(result.browserDownloadUrl);
-    setDirectUploadSize(result.size);
+    setStagedIpa(result);
+    setDirectUrl('');
     setDirectName((current) => {
       if (current.trim()) return current;
       return result.originalFilename
@@ -306,66 +228,77 @@ export default function AddAppTabScreen() {
 
   const handleDirectUrlChange = useCallback((value: string) => {
     setDirectUrl(value);
-    setDirectUploadSize(0);
+    // Typing a URL deliberately switches back to the direct-link flow. The
+    // private staged asset remains inaccessible to users and is not queued.
+    if (value.trim()) setStagedIpa(null);
   }, []);
 
   const handleAddDirect = useCallback(async () => {
+    setIsSaving(true);
     try {
-      const downloadURL = normalizeHttpsUrl(directUrl, 'IPA download URL');
-      const filename = downloadURL.split('/').pop()?.replace(/\.ipa(?:\?.*)?$/i, '') || 'Direct App';
+      const upload = stagedIpa;
+      const downloadURL = upload ? '' : normalizeHttpsUrl(directUrl, 'IPA download URL');
+      const filename = upload
+        ? upload.originalFilename.replace(/\.ipa$/i, '')
+        : downloadURL.split('/').pop()?.replace(/\.ipa(?:\?.*)?$/i, '') || 'Direct App';
       const name = directName.trim() || decodeURIComponent(filename).replace(/[-_]+/g, ' ');
-      const iconURL = directIconUrl.trim() ? normalizeHttpsUrl(directIconUrl, 'Icon URL') : DEFAULT_ICON_URL;
-      const description = directDescription.trim() || 'Imported from a verified direct IPA link.';
-      const app: RepoApp = {
-        name,
-        bundleIdentifier: ['com', 'ryp0', 'direct', makeSlug(name), directLinkIdentifier(downloadURL)].join('.'),
-        developerName: 'Direct Import',
-        subtitle: description,
-        localizedDescription: description,
-        iconURL,
+      const description = directDescription.trim() || (
+        upload
+          ? 'Uploaded IPA pending private validation.'
+          : 'Imported from a verified direct IPA link.'
+      );
+      await queuePrivateImport({
+        method: upload ? 'upload-artifact' : 'direct-url',
+        sourceUrl: downloadURL || undefined,
+        appName: name,
+        description,
         category: directCategory,
-        updatePolicy: 'static',
-        status: { state: 'unknown' },
-        versions: [{ version: '1.0.0', date: today(), downloadURL, size: directUploadSize }],
-      };
-      const saved = await saveOneApp(app, 'Direct IPA Added');
-      if (saved) {
-        setDirectUrl('');
-        setDirectName('');
-        setDirectDescription('');
-        setDirectIconUrl('');
-        setDirectUploadSize(0);
-        setDirectUploaderGeneration((generation) => generation + 1);
-      }
+        iconUrl: directIconUrl || undefined,
+        ...(upload ? {
+          uploadRepository: upload.uploadRepository,
+          uploadReleaseTag: upload.stagingReleaseTag,
+          uploadArtifactName: upload.filename,
+        } : {}),
+      });
+      setDirectUrl('');
+      setDirectName('');
+      setDirectDescription('');
+      setDirectIconUrl('');
+      setStagedIpa(null);
+      setDirectUploaderGeneration((generation) => generation + 1);
+      Alert.alert(
+        upload ? 'Uploaded IPA Queued' : 'Direct IPA Queued',
+        'The private importer will inspect the IPA before it publishes an asset or changes repo.json.',
+      );
     } catch (error: any) {
-      Alert.alert('Could Not Add Direct IPA', error instanceof ImportSourceError ? error.message : 'Check the IPA and icon URLs.');
+      Alert.alert('Could Not Queue IPA', error instanceof ImportSourceError ? error.message : error?.message || 'Check the IPA and icon URLs.');
+    } finally {
+      setIsSaving(false);
     }
-  }, [directCategory, directDescription, directIconUrl, directName, directUploadSize, directUrl, saveOneApp]);
+  }, [directCategory, directDescription, directIconUrl, directName, directUrl, stagedIpa]);
 
   const handleAddGithub = useCallback(async () => {
     setIsSaving(true);
     try {
-      const app = await importLatestGitHubRelease({
-        repository: githubRepository,
-        name: githubName,
-        description: githubDescription,
-        iconURL: githubIconUrl,
+      await queuePrivateImport({
+        method: 'github',
+        sourceUrl: githubRepository,
+        appName: githubName || undefined,
+        description: githubDescription || undefined,
+        iconUrl: githubIconUrl || undefined,
         category: githubCategory,
       });
-      setIsSaving(false);
-      const saved = await saveOneApp(app, 'GitHub App Added');
-      if (saved) {
-        setGithubRepository('');
-        setGithubName('');
-        setGithubDescription('');
-        setGithubIconUrl('');
-      }
+      setGithubRepository('');
+      setGithubName('');
+      setGithubDescription('');
+      setGithubIconUrl('');
+      Alert.alert('GitHub Import Queued', 'The private importer will prefer Source.JSON, then releases and Actions artifacts, validate the IPA, and publish only verified metadata.');
     } catch (error: any) {
-      Alert.alert('GitHub Import Failed', error?.message || 'Could not find a usable IPA or source metadata on GitHub.');
+      Alert.alert('GitHub Import Failed', error?.message || 'Could not queue this GitHub source for validation.');
     } finally {
       setIsSaving(false);
     }
-  }, [githubCategory, githubDescription, githubIconUrl, githubName, githubRepository, saveOneApp]);
+  }, [githubCategory, githubDescription, githubIconUrl, githubName, githubRepository]);
 
   const handleExtractRepository = useCallback(async () => {
     setIsSaving(true);
@@ -418,28 +351,44 @@ export default function AddAppTabScreen() {
   }, []);
 
   const handleMergeReviewedApps = useCallback(async () => {
-    if (!repo) {
-      Alert.alert('Repository Unavailable', 'Refresh the Apps page before merging.');
-      return;
-    }
     const selected = stagedApps
       .filter((item) => item.selected)
-      .map(({ app, category }) => prepareNewImport({ ...app, category }));
+      .map(({ app, category }) => ({ app, category }));
     if (!selected.length) {
-      Alert.alert('Select an App', 'Choose at least one app to merge into repo.json.');
+      Alert.alert('Select an App', 'Choose at least one app to queue for validation.');
       return;
     }
-    const saved = await persistApps(
-      [...repo.apps, ...selected],
-      'Repository Merged',
-      String(selected.length) + (selected.length === 1 ? ' app was' : ' apps were') + ' committed to repo.json.',
-    );
-    if (saved) {
+    setIsSaving(true);
+    let queued = 0;
+    try {
+      const sourceUrl = normalizeHttpsUrl(repoUrl, 'Repository URL');
+      for (const { app, category } of selected) {
+        await queuePrivateImport({
+          method: 'repository',
+          sourceUrl,
+          appName: app.name,
+          description: app.localizedDescription || app.subtitle || undefined,
+          iconUrl: app.iconURL || undefined,
+          category,
+          selector: app.bundleIdentifier,
+        });
+        queued += 1;
+      }
       setIsReviewSheetPresented(false);
       setStagedApps([]);
       setRepoUrl('');
+      Alert.alert('Repository Imports Queued', `${queued} ${queued === 1 ? 'app is' : 'apps are'} being rechecked privately before any catalog change is published.`);
+    } catch (error: any) {
+      Alert.alert(
+        'Repository Queue Paused',
+        queued
+          ? `${queued} ${queued === 1 ? 'app was' : 'apps were'} queued before this problem: ${error?.message || 'Could not queue the next app.'}`
+          : error?.message || 'Could not queue this repository import.',
+      );
+    } finally {
+      setIsSaving(false);
     }
-  }, [persistApps, repo, stagedApps]);
+  }, [repoUrl, stagedApps]);
 
   const handleAddTelegram = useCallback(async () => {
     if (!telegramName.trim() || !telegramDescription.trim()) {
@@ -477,15 +426,7 @@ export default function AddAppTabScreen() {
         return;
       }
 
-      const saved = await saveOneApp(result.app, 'Telegram App Added');
-      if (saved) {
-        setTelegramName('');
-        setTelegramDescription('');
-        setTelegramSourceUrl('');
-        setTelegramDeveloper('');
-        setTelegramBundleId('');
-        setTelegramIconUrl('');
-      }
+      Alert.alert('Telegram Import', 'The private importer did not return a queue confirmation. Refresh Workflows before trying again.');
     } catch (error: any) {
       Alert.alert('Telegram Import Failed', error?.message || 'The Telegram import service could not process this message.');
     } finally {
@@ -493,7 +434,6 @@ export default function AddAppTabScreen() {
       setIsSaving(false);
     }
   }, [
-    saveOneApp,
     router,
     telegramBundleId,
     telegramCategory,
@@ -503,58 +443,6 @@ export default function AddAppTabScreen() {
     telegramName,
     telegramSourceUrl,
   ]);
-
-  const loadRequests = useCallback(async () => {
-    setIsLoadingRequests(true);
-    try {
-      setRequests(await fetchAppRequests());
-      setRequestsError(null);
-    } catch (error: any) {
-      setRequestsError(error?.message || 'Could not load app requests.');
-    } finally {
-      setIsLoadingRequests(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (workspaceTab === 'requests' && isDeveloperMode) void loadRequests();
-  }, [isDeveloperMode, loadRequests, workspaceTab]);
-
-  const useRequestInImporter = useCallback((request: AppRequestRecord) => {
-    const recommendation = recommendationFor(request);
-    setWorkspaceTab('add');
-    setImportMethod(recommendation.method);
-    if (recommendation.method === 'direct') {
-      setDirectUrl(request.sourceUrl);
-      setDirectUploadSize(0);
-      setDirectName(request.name);
-      setDirectDescription(request.description);
-      setDirectCategory(normalizedCategory(request.category));
-    } else if (recommendation.method === 'github') {
-      setGithubRepository(request.sourceUrl);
-      setGithubName(request.name);
-      setGithubDescription(request.description);
-      setGithubCategory(normalizedCategory(request.category));
-    } else if (recommendation.method === 'repo') {
-      setRepoUrl(request.sourceUrl);
-    } else {
-      setTelegramName(request.name);
-      setTelegramDescription(request.description);
-      setTelegramSourceUrl(request.sourceUrl);
-      setTelegramCategory(normalizedCategory(request.category));
-    }
-  }, []);
-
-  const openRequestSource = useCallback(async (request: AppRequestRecord) => {
-    try {
-      const sourceUrl = getSafeExternalHttpsUrl(request.sourceUrl)
-        ?? getSafeExternalHttpsUrl(request.issueUrl);
-      if (!sourceUrl) throw new Error('unsafe URL');
-      await Linking.openURL(sourceUrl);
-    } catch {
-      Alert.alert('Could Not Open Source', 'This request does not contain a usable source URL.');
-    }
-  }, []);
 
   if (!isDeveloperMode) return <AppRequestForm />;
 
@@ -572,6 +460,11 @@ export default function AddAppTabScreen() {
   return (
     <>
       <Stack.Screen options={{ title: 'Add App', headerLargeTitle: true }} />
+      {isDeveloperMode ? (
+        <Stack.Toolbar placement="right">
+          <Stack.Toolbar.Button icon="tray.full" onPress={() => router.push('/requests')} />
+        </Stack.Toolbar>
+      ) : null}
       <ScrollView
         style={[styles.container, { backgroundColor: theme.background }]}
         contentInsetAdjustmentBehavior="automatic"
@@ -582,14 +475,20 @@ export default function AddAppTabScreen() {
         <AppCategoryTabs
           categories={WORKSPACE_TABS}
           selectedCategory={workspaceTab}
-          onSelectCategory={(tab) => setWorkspaceTab(tab as WorkspaceTab)}
+          onSelectCategory={(tab) => {
+            if (tab === 'requests') {
+              router.push('/requests');
+              return;
+            }
+            setWorkspaceTab(tab as WorkspaceTab);
+          }}
           accentColor={accent}
         />
 
         {workspaceTab === 'add' ? (
           <>
             <View style={[styles.guideCard, { backgroundColor: theme.surface, borderColor: theme.separator }]}>
-              <Text selectable style={[styles.guideTitle, { color: theme.label }]}>Add a source, then commit once</Text>
+              <Text selectable style={[styles.guideTitle, { color: theme.label }]}>Add a source, then validate privately</Text>
               <Text selectable style={[styles.guideText, { color: theme.secondaryLabel }]}>
                 GitHub is best for repeat releases. Repo imports are reviewed before they merge. Telegram files are processed server-side so R2 and GitHub credentials stay private.
               </Text>
@@ -602,7 +501,7 @@ export default function AddAppTabScreen() {
             />
 
             {importMethod === 'direct' ? (
-              <SectionCard title="Direct IPA" detail="Paste a verified HTTPS .ipa link, or choose a local IPA to upload as a public GitHub release asset. Nothing is added to repo.json until you commit below." theme={theme}>
+              <SectionCard title="Direct IPA" detail="Paste a verified HTTPS .ipa link, or choose a local IPA. Uploaded files stay in private staging until the importer validates them; nothing is added to repo.json from this screen." theme={theme}>
                 <IpaUploader
                   key={directUploaderGeneration}
                   accentColor={accent}
@@ -611,7 +510,12 @@ export default function AddAppTabScreen() {
                   secondaryLabelColor={theme.secondaryLabel}
                   onUploaded={handleIpaUploaded}
                 />
-                <FormField theme={theme} label="IPA Download URL" placeholder="https://example.com/app.ipa" value={directUrl} onChangeText={handleDirectUrlChange} autoCapitalize="none" keyboardType="url" />
+                {stagedIpa ? (
+                  <Text selectable style={[styles.stagedUploadDetail, { color: theme.secondaryLabel }]}>
+                    {stagedIpa.originalFilename} is in private validation staging. Clear this by entering a direct URL instead.
+                  </Text>
+                ) : null}
+                <FormField theme={theme} label={stagedIpa ? 'Or use a Direct IPA URL' : 'IPA Download URL'} placeholder="https://example.com/app.ipa" value={directUrl} onChangeText={handleDirectUrlChange} autoCapitalize="none" keyboardType="url" />
                 <FormField theme={theme} label="App Display Name (Optional)" placeholder="Automatically derived from the IPA filename" value={directName} onChangeText={setDirectName} />
                 <FormField theme={theme} label="Description (Optional)" placeholder="What does this app do?" value={directDescription} onChangeText={setDirectDescription} multiline />
                 <FormField theme={theme} label="Icon URL (Optional)" placeholder="https://…/icon.png" value={directIconUrl} onChangeText={setDirectIconUrl} autoCapitalize="none" keyboardType="url" />
@@ -669,46 +573,6 @@ export default function AddAppTabScreen() {
           </>
         ) : null}
 
-        {workspaceTab === 'requests' ? (
-          <>
-            <SectionCard title="Incoming App Requests" detail="A suggested action only pre-fills an import form. Nothing is published until you review it and commit through GitHub." theme={theme}>
-              <TouchableOpacity accessibilityRole="button" onPress={() => void loadRequests()} style={[styles.secondaryButton, { borderColor: accent }]}>
-                {isLoadingRequests ? <ActivityIndicator color={accent} /> : <Text style={[styles.secondaryButtonText, { color: accent }]}>Refresh Requests</Text>}
-              </TouchableOpacity>
-              {requestsError ? <Text selectable style={[styles.inlineError, { color: '#FF3B30' }]}>{requestsError}</Text> : null}
-            </SectionCard>
-            {requests.length ? requests.map((request) => {
-              const recommendation = recommendationFor(request);
-              return (
-                <View key={request.id} style={[styles.requestCard, { backgroundColor: theme.surface, borderColor: theme.separator }]}>
-                  <Text selectable style={[styles.requestTitle, { color: theme.label }]}>{request.name}</Text>
-                  <Text selectable style={[styles.requestMeta, { color: theme.secondaryLabel }]}>
-                    {request.category} · {request.method === 'direct-ipa' ? 'Direct IPA' : request.method === 'message-link' ? 'Message link' : 'Updatable source'}
-                  </Text>
-                  <Text selectable numberOfLines={3} style={[styles.requestDescription, { color: theme.secondaryLabel }]}>{request.description}</Text>
-                  <Text selectable numberOfLines={1} style={[styles.requestSource, { color: accent }]}>{request.sourceUrl}</Text>
-                  <View style={styles.requestSuggestion}>
-                    <Text selectable style={[styles.suggestionTitle, { color: theme.label }]}>Suggested: {recommendation.label}</Text>
-                    <Text selectable style={[styles.suggestionDetail, { color: theme.secondaryLabel }]}>{recommendation.detail}</Text>
-                  </View>
-                  <View style={styles.requestActions}>
-                    <TouchableOpacity accessibilityRole="button" onPress={() => useRequestInImporter(request)} style={[styles.requestAction, { backgroundColor: accent }]}>
-                      <Text style={styles.requestActionText}>Use {recommendation.label}</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity accessibilityRole="button" onPress={() => void openRequestSource(request)} style={[styles.requestAction, styles.outlineRequestAction, { borderColor: accent }]}>
-                      <Text style={[styles.outlineRequestActionText, { color: accent }]}>Open Source</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              );
-            }) : (
-              <SectionCard title={isLoadingRequests ? 'Loading Requests' : 'No Open Requests'} detail={isLoadingRequests ? 'Checking the request inbox…' : requestsError ? 'Fix the request API configuration, then refresh.' : 'New consumer submissions will appear here.'} theme={theme}>
-                {!requestsError ? <Text selectable style={[styles.emptyRequestText, { color: theme.secondaryLabel }]}>You are all caught up.</Text> : null}
-              </SectionCard>
-            )}
-          </>
-        ) : null}
-
         {workspaceTab === 'manage' ? (
           <>
             <SectionCard title="Repository Overview" detail={String(repo?.apps.length || 0) + ' published ' + ((repo?.apps.length || 0) === 1 ? 'app.' : 'apps.') + ' Changes are committed through the authenticated GitHub Contents API.'} theme={theme}>
@@ -762,6 +626,7 @@ const styles = StyleSheet.create({
   formCard: { marginHorizontal: 16, marginBottom: 16, padding: 16, borderWidth: StyleSheet.hairlineWidth, borderRadius: 18, borderCurve: 'continuous' },
   sectionHeading: { fontSize: 18, fontWeight: '700' },
   sectionSub: { marginTop: 5, marginBottom: 16, fontSize: 13, lineHeight: 18 },
+  stagedUploadDetail: { marginTop: -4, marginBottom: 12, fontSize: 12, lineHeight: 17 },
   field: { marginBottom: 14 },
   inputLabel: { marginBottom: 6, fontSize: 13, fontWeight: '600' },
   input: { minHeight: 44, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 12, borderWidth: StyleSheet.hairlineWidth, fontSize: 15 },
@@ -777,21 +642,6 @@ const styles = StyleSheet.create({
   secondaryButton: { minHeight: 44, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderRadius: 12 },
   secondaryButtonText: { fontSize: 14, fontWeight: '700' },
   reviewAgainButton: { marginTop: 10 },
-  inlineError: { marginTop: 12, fontSize: 13, lineHeight: 18 },
-  requestCard: { marginHorizontal: 16, marginBottom: 12, padding: 16, borderWidth: StyleSheet.hairlineWidth, borderRadius: 18, borderCurve: 'continuous' },
-  requestTitle: { fontSize: 17, fontWeight: '700' },
-  requestMeta: { marginTop: 4, fontSize: 12 },
-  requestDescription: { marginTop: 10, fontSize: 13, lineHeight: 18 },
-  requestSource: { marginTop: 10, fontSize: 12, fontWeight: '600' },
-  requestSuggestion: { marginTop: 14 },
-  suggestionTitle: { fontSize: 13, fontWeight: '700' },
-  suggestionDetail: { marginTop: 3, fontSize: 12, lineHeight: 17 },
-  requestActions: { flexDirection: 'row', gap: 8, marginTop: 15 },
-  requestAction: { flex: 1, minHeight: 40, alignItems: 'center', justifyContent: 'center', borderRadius: 11 },
-  requestActionText: { color: '#FFFFFF', fontSize: 13, fontWeight: '700' },
-  outlineRequestAction: { borderWidth: 1 },
-  outlineRequestActionText: { fontSize: 13, fontWeight: '700' },
-  emptyRequestText: { fontSize: 14 },
   categorySummary: { marginBottom: 12 },
   categorySummaryRow: { minHeight: 42, alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', borderBottomWidth: StyleSheet.hairlineWidth },
   categorySummaryLabel: { fontSize: 15 },

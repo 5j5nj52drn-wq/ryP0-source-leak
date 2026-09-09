@@ -91,7 +91,10 @@ function normalizedCategory(value?: string) {
 function prepareNewImport(app: RepoApp): RepoApp {
   return {
     ...app,
-    updatePolicy: 'static',
+    // Importers may attach an upstream source for the private automation
+    // service. Preserve its policy rather than silently turning a tracked app
+    // into a static one while it is added to repo.json.
+    updatePolicy: app.updatePolicy || 'static',
     status: { state: 'unknown' },
   };
 }
@@ -358,7 +361,7 @@ export default function AddAppTabScreen() {
         setGithubIconUrl('');
       }
     } catch (error: any) {
-      Alert.alert('GitHub Import Failed', error?.message || 'Could not fetch a release from GitHub.');
+      Alert.alert('GitHub Import Failed', error?.message || 'Could not find a usable IPA or source metadata on GitHub.');
     } finally {
       setIsSaving(false);
     }
@@ -620,7 +623,7 @@ export default function AddAppTabScreen() {
             ) : null}
 
             {importMethod === 'github' ? (
-              <SectionCard title="GitHub Release Fetcher" detail="The importer finds the latest IPA. If no icon is chosen, it looks for an app icon or logo in the repository, then uses a neutral app placeholder." theme={theme}>
+              <SectionCard title="GitHub App Finder" detail="Checks stable releases first, then beta, nightly, alpha, and Source.JSON metadata. It prefers the app’s real icon over the developer profile image." theme={theme}>
                 <FormField theme={theme} label="GitHub Repository" placeholder="owner/repository or https://github.com/owner/repository" value={githubRepository} onChangeText={setGithubRepository} autoCapitalize="none" />
                 <FormField theme={theme} label="Rename App (Optional)" placeholder="Keep the repository name" value={githubName} onChangeText={setGithubName} />
                 <FormField theme={theme} label="Description (Optional)" placeholder="Use the release or repository description" value={githubDescription} onChangeText={setGithubDescription} multiline />
@@ -628,7 +631,7 @@ export default function AddAppTabScreen() {
                 <IconPickerRow value={githubIconUrl} target="github" theme={theme} accent={accent} onOpenGallery={openIconGallery} />
                 <Text selectable style={[styles.inputLabel, { color: theme.label }]}>Category</Text>
                 <AppCategoryTabs categories={CATEGORIES} selectedCategory={githubCategory} onSelectCategory={setGithubCategory} accentColor={accent} />
-                {primaryButton('Fetch & Add Latest Release', () => void handleAddGithub())}
+                {primaryButton('Find & Add App', () => void handleAddGithub())}
               </SectionCard>
             ) : null}
 

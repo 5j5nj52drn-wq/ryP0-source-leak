@@ -16,13 +16,18 @@ type GitHubAsset = {
   name?: string;
   browser_download_url?: string;
   size?: number;
+  content_type?: string;
+  updated_at?: string;
 };
 
 type GitHubRelease = {
   name?: string;
   tag_name?: string;
   published_at?: string;
+  created_at?: string;
   body?: string;
+  draft?: boolean;
+  prerelease?: boolean;
   assets?: GitHubAsset[];
 };
 
@@ -36,6 +41,30 @@ type GitHubRepository = {
 type GitHubTree = {
   tree?: { path?: string; type?: string; size?: number }[];
   truncated?: boolean;
+};
+
+type GitHubArtifact = {
+  id?: number;
+  name?: string;
+  size_in_bytes?: number;
+  archive_download_url?: string;
+  expired?: boolean;
+  created_at?: string;
+};
+
+type GitHubArtifactsResponse = {
+  artifacts?: GitHubArtifact[];
+};
+
+type GitHubReleaseIpa = {
+  release: GitHubRelease;
+  asset: GitHubAsset;
+  channel: 'release' | 'beta' | 'nightly' | 'alpha' | 'prerelease';
+};
+
+type GitHubSourceMetadata = {
+  app: RepoApp;
+  sourceURL: string;
 };
 
 type RawRepoVersion = Partial<RepoVersion> & Record<string, unknown>;
@@ -184,6 +213,161 @@ function rawGitHubUrl(owner: string, repository: string, branch: string, path: s
   return `https://raw.githubusercontent.com/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}/${encodeURIComponent(branch)}/${path.split('/').map(encodeURIComponent).join('/')}`;
 }
 
+function normalizedNameKey(value: unknown) {
+  return cleanString(value, 240).toLocaleLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+function releaseChannel(release: GitHubRelease): GitHubReleaseIpa['channel'] | null {
+  if (release.draft) return null;
+  if (!release.prerelease) return 'release';
+  const label = `${cleanString(release.name, 240)} ${cleanString(release.tag_name, 240)}`.toLocaleLowerCase();
+  if (/\bbeta\b|(?:^|[-_.])b\d+(?:[-_.]|$)/.test(label)) return 'beta';
+  if (/\bnightly\b|\bnight\b/.test(label)) return 'nightly';
+  if (/\balpha\b|(?:^|[-_.])a\d+(?:[-_.]|$)/.test(label)) return 'alpha';
+  return 'prerelease';
+}
+
+function releaseChannelRank(channel: GitHubReleaseIpa['channel']) {
+  switch (channel) {
+    case 'release': return 0;
+    case 'beta': return 1;
+    case 'nightly': return 2;
+    case 'alpha': return 3;
+    case 'prerelease': return 4;
+  }
+}
+
+function isSafeIpaAsset(asset: GitHubAsset) {
+  return typeof asset.name === 'string'
+    && /\.ipa$/i.test(asset.name)
+    && isSafeExternalHttpsUrl(asset.browser_download_url);
+}
+
+function ipaAssetRank(asset: GitHubAsset) {
+  const name = cleanString(asset.name, 240).toLocaleLowerCase();
+  return (/(?:ios|iphone|ipad)/.test(name) ? 20 : 0)
+    + (/universal/.test(name) ? 10 : 0)
+    - (/(?:macos|watchos|tvos|simulator|debug-symbol)/.test(name) ? 30 : 0);
+}
+
+function findGitHubReleaseIpa(releases: readonly GitHubRelease[]): GitHubReleaseIpa | null {
+  const candidates: (GitHubReleaseIpa & { order: number })[] = [];
+  releases.forEach((release, order) => {
+    const channel = releaseChannel(release);
+    if (!channel) return;
+    const assets = (release.assets || []).filter(isSafeIpaAsset)
+      .sort((left, right) => ipaAssetRank(right) - ipaAssetRank(left) || cleanString(left.name, 240).localeCompare(cleanString(right.name, 240)));
+    const asset = assets[0];
+    if (asset) candidates.push({ release, asset, channel, order });
+  });
+  candidates.sort((left, right) => releaseChannelRank(left.channel) - releaseChannelRank(right.channel) || left.order - right.order);
+  const candidate = candidates[0];
+  return candidate ? { release: candidate.release, asset: candidate.asset, channel: candidate.channel } : null;
+}
+
+function sourceJsonPathRank(path: string) {
+  const depth = path.split('/').length - 1;
+  if (/(?:^|\/)source\.json$/i.test(path)) return depth * 10;
+  if (/(?:^|\/)repo\.json$/i.test(path)) return 100 + depth * 10;
+  return Number.POSITIVE_INFINITY;
+}
+
+async function listGitHubTreePaths(owner: string, repository: string, branch: string) {
+  const apiBase = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}`;
+  const tree = await fetchJson<GitHubTree>(`${apiBase}/git/trees/${encodeURIComponent(branch)}?recursive=1`);
+  return (tree.tree || [])
+    .filter((entry) => entry.type === 'blob' && typeof entry.path === 'string')
+    .map((entry) => entry.path!);
+}
+
+function chooseSourceJsonApp(raw: unknown, targetNames: readonly string[]) {
+  const rawApps = raw && typeof raw === 'object' && !Array.isArray(raw)
+    ? (raw as { apps?: unknown }).apps
+    : null;
+  if (!Array.isArray(rawApps)) return null;
+  const apps = rawApps.map(normalizeRemoteApp).filter((app): app is RepoApp => Boolean(app));
+  if (!apps.length) return null;
+  if (apps.length === 1) return apps[0];
+
+  const targetKeys = [...new Set(targetNames.map(normalizedNameKey).filter((value) => value.length >= 3))];
+  const matches = apps.map((app) => {
+    const name = normalizedNameKey(app.name);
+    const bundleIdentifier = normalizedNameKey(app.bundleIdentifier);
+    let score = 0;
+    for (const target of targetKeys) {
+      if (name === target) score = Math.max(score, 1_000);
+      else if (name.includes(target) || target.includes(name)) score = Math.max(score, 300);
+      else if (bundleIdentifier.includes(target)) score = Math.max(score, 100);
+    }
+    return { app, score };
+  }).filter((candidate) => candidate.score > 0)
+    .sort((left, right) => right.score - left.score || left.app.name.localeCompare(right.app.name));
+
+  // Do not guess from a large catalogue. Exact matches are always safe; fuzzy
+  // matches only win when they are not tied with another catalogue app.
+  if (!matches.length) return null;
+  if (matches[0].score >= 1_000) return matches[0].app;
+  if (matches.length === 1 || matches[0].score > matches[1].score) return matches[0].app;
+  return null;
+}
+
+async function findGitHubSourceMetadata(
+  owner: string,
+  repository: string,
+  branch: string,
+  paths: readonly string[],
+  targetNames: readonly string[],
+): Promise<GitHubSourceMetadata | null> {
+  // Probe common root names too. Git trees may be truncated for very large
+  // repositories, but a root Source.JSON is still inexpensive to verify.
+  const sourcePaths = [...new Set([
+    ...paths.filter((path) => Number.isFinite(sourceJsonPathRank(path))),
+    'Source.JSON',
+    'source.json',
+    'repo.json',
+  ])]
+    .sort((left, right) => sourceJsonPathRank(left) - sourceJsonPathRank(right) || left.localeCompare(right));
+
+  for (const path of sourcePaths) {
+    const sourceURL = rawGitHubUrl(owner, repository, branch, path);
+    try {
+      const source = await fetchJson<unknown>(sourceURL);
+      const app = chooseSourceJsonApp(source, targetNames);
+      if (app) return { app, sourceURL };
+    } catch (error) {
+      // Source metadata is optional. A missing or malformed source.json must
+      // never prevent a normal GitHub release import.
+      if (error instanceof ImportSourceError && error.status !== 404) continue;
+    }
+  }
+  return null;
+}
+
+async function findGitHubActionsArtifact(owner: string, repository: string) {
+  const repoPath = `${encodeURIComponent(owner)}/${encodeURIComponent(repository)}`;
+  try {
+    const payload = await fetchJson<GitHubArtifactsResponse>(`https://api.github.com/repos/${repoPath}/actions/artifacts?per_page=100`);
+    return (payload.artifacts || [])
+      .filter((artifact) => !artifact.expired && isSafeExternalHttpsUrl(artifact.archive_download_url))
+      .filter((artifact) => /(?:\.ipa$|\bipa\b|\bios\b|\biphone\b)/i.test(cleanString(artifact.name, 240)))
+      .sort((left, right) => cleanString(right.created_at, 40).localeCompare(cleanString(left.created_at, 40)))[0] || null;
+  } catch {
+    // Artifact discovery is a final optional fallback. GitHub may withhold
+    // Actions data for a private upstream repository or a rate-limited client.
+    return null;
+  }
+}
+
+function mergedVersions(current: RepoVersion, history: readonly RepoVersion[]) {
+  const seen = new Set<string>();
+  return [current, ...history].filter((version) => {
+    const key = `${version.version}\u0000${version.downloadURL}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 /** Prefer an actual iOS app asset over a repository logo, badge or avatar. */
 export function githubIconPathScore(path: string) {
   if (!/\.(png|jpe?g|webp)$/i.test(path)) return -1;
@@ -209,12 +393,10 @@ function safeDiscoveredIcon(value: unknown, baseUrl: string): string | undefined
   }
 }
 
-async function findGitHubIcon(owner: string, repository: string, branch: string) {
+async function findGitHubIcon(owner: string, repository: string, branch: string, knownPaths?: readonly string[]) {
   const rootUrl = rawGitHubUrl(owner, repository, branch, '');
-  const apiBase = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}`;
   try {
-    const tree = await fetchJson<GitHubTree>(`${apiBase}/git/trees/${encodeURIComponent(branch)}?recursive=1`);
-    const paths = (tree.tree || []).filter((entry) => entry.type === 'blob' && typeof entry.path === 'string').map((entry) => entry.path!);
+    const paths = knownPaths?.length ? [...knownPaths] : await listGitHubTreePaths(owner, repository, branch);
     const candidates = paths.map((path) => ({ path, score: githubIconPathScore(path) }))
       .filter((item) => item.score >= 0)
       .sort((a, b) => b.score - a.score || a.path.length - b.path.length || a.path.localeCompare(b.path));
@@ -275,46 +457,82 @@ export type GitHubImportOptions = {
 export async function importLatestGitHubRelease(options: GitHubImportOptions): Promise<RepoApp> {
   const { owner, repository } = normalizeGitHubRepository(options.repository);
   const repoPath = `${encodeURIComponent(owner)}/${encodeURIComponent(repository)}`;
-  const [release, repositoryInfo] = await Promise.all([
-    fetchJson<GitHubRelease>(`https://api.github.com/repos/${repoPath}/releases/latest`),
+  const [repositoryInfo, releases] = await Promise.all([
     fetchJson<GitHubRepository>(`https://api.github.com/repos/${repoPath}`),
+    (async () => {
+      try {
+        return await fetchJson<GitHubRelease[]>(`https://api.github.com/repos/${repoPath}/releases?per_page=100`);
+      } catch (error) {
+        // A repository without releases returns 404. Continue to Source.JSON
+        // and Actions-artifact discovery rather than rejecting it immediately.
+        if (error instanceof ImportSourceError && error.status === 404) return [] as GitHubRelease[];
+        throw error;
+      }
+    })(),
   ]);
-  const ipa = release.assets?.find((asset) => (
-    typeof asset.name === 'string' &&
-    asset.name.toLowerCase().endsWith('.ipa') &&
-    isSafeExternalHttpsUrl(asset.browser_download_url)
-  ));
-  if (!ipa?.browser_download_url) {
-    throw new ImportSourceError('No secure .ipa asset was found in the latest GitHub release.');
+
+  const branch = repositoryInfo.default_branch || 'HEAD';
+  const paths = await listGitHubTreePaths(owner, repository, branch).catch(() => [] as string[]);
+  const releaseIpa = findGitHubReleaseIpa(releases);
+  const sourceMetadata = await findGitHubSourceMetadata(
+    owner,
+    repository,
+    branch,
+    paths,
+    [options.name || '', repositoryInfo.name || '', repository, releaseIpa?.asset.name || ''],
+  );
+  const sourceVersion = sourceMetadata?.app.versions[0];
+
+  if (!releaseIpa && !sourceVersion) {
+    const artifact = await findGitHubActionsArtifact(owner, repository);
+    if (artifact) {
+      throw new ImportSourceError(
+        `Found the GitHub Actions artifact “${cleanString(artifact.name, 120) || 'IPA build'}”. It is a ZIP artifact, so ryP0 automation must verify, extract, and publish its IPA before it can be installed.`,
+      );
+    }
+    throw new ImportSourceError('No secure IPA was found in stable releases, beta, nightly, alpha, Source.JSON, or public GitHub Actions artifacts.');
   }
 
-  const sourceName = repositoryInfo.name || repository;
+  const selectedVersion: RepoVersion = releaseIpa
+    ? {
+      version: cleanString(releaseIpa.release.tag_name || releaseIpa.release.name, 100).replace(/^v(?=\d)/i, '') || '1.0.0',
+      date: cleanString(releaseIpa.release.published_at || releaseIpa.release.created_at, 30).slice(0, 10) || today(),
+      downloadURL: releaseIpa.asset.browser_download_url!,
+      size: asNonNegativeNumber(releaseIpa.asset.size),
+      ...(cleanString(releaseIpa.release.body, 2_000) ? { localizedDescription: cleanString(releaseIpa.release.body, 2_000) } : {}),
+    }
+    : sourceVersion!;
+
+  const sourceName = sourceMetadata?.app.name || repositoryInfo.name || repository;
   const appName = cleanString(options.name, 120) || sourceName;
   const explicitIcon = cleanString(options.iconURL, 2_000);
+  const metadataIcon = sourceMetadata && sourceMetadata.app.iconURL !== DEFAULT_ICON_URL
+    ? safeDiscoveredIcon(sourceMetadata.app.iconURL, sourceMetadata.sourceURL)
+    : undefined;
   const iconURL = explicitIcon
     ? normalizeHttpsUrl(explicitIcon, 'Icon URL')
-    : await findGitHubIcon(owner, repository, repositoryInfo.default_branch || 'HEAD');
+    : metadataIcon || await findGitHubIcon(owner, repository, branch, paths);
   const description = cleanString(options.description, 2_000)
-    || cleanString(release.body, 2_000)
+    || cleanString(sourceMetadata?.app.localizedDescription || sourceMetadata?.app.subtitle, 2_000)
+    || cleanString(releaseIpa?.release.body, 2_000)
     || cleanString(repositoryInfo.description, 2_000)
-    || `Latest GitHub release: ${release.tag_name || 'unknown version'}`;
-  const version = cleanString(release.tag_name, 100).replace(/^v(?=\d)/i, '') || '1.0.0';
+    || `GitHub ${releaseIpa?.channel || 'source'} import`;
 
   return {
     name: appName,
-    bundleIdentifier: `com.github.${owner.toLowerCase().replace(/[^a-z0-9]/g, '')}.${repository.toLowerCase().replace(/[^a-z0-9]/g, '')}`,
-    developerName: cleanString(repositoryInfo.owner?.login, 120) || owner,
+    bundleIdentifier: sourceMetadata?.app.bundleIdentifier
+      || `com.github.${owner.toLowerCase().replace(/[^a-z0-9]/g, '')}.${repository.toLowerCase().replace(/[^a-z0-9]/g, '')}`,
+    developerName: sourceMetadata?.app.developerName || cleanString(repositoryInfo.owner?.login, 120) || owner,
     subtitle: description,
     localizedDescription: description,
     iconURL,
     category: cleanString(options.category, 60) || 'Sideloading',
+    ...(sourceMetadata ? { automation: { sourceURL: sourceMetadata.sourceURL } } : {}),
+    // Source.JSON records the upstream metadata that the private updater can
+    // later track. Do not claim a daily updater exists until automation creates
+    // a real protected workflow for this app.
     updatePolicy: 'static',
-    versions: [{
-      version,
-      date: cleanString(release.published_at, 30).slice(0, 10) || today(),
-      downloadURL: ipa.browser_download_url,
-      size: asNonNegativeNumber(ipa.size),
-    }],
+    versions: mergedVersions(selectedVersion, sourceMetadata?.app.versions || []),
   };
 }
 
@@ -350,13 +568,16 @@ export function normalizeRemoteApp(value: unknown): RepoApp | null {
   if (!name || !bundleIdentifier || versions.length === 0) return null;
 
   const iconCandidate = cleanString(app.iconURL, 2_000);
+  const iconURL = isSafeExternalHttpsUrl(iconCandidate)
+    ? safeDiscoveredIcon(iconCandidate, iconCandidate) || DEFAULT_ICON_URL
+    : DEFAULT_ICON_URL;
   return {
     name,
     bundleIdentifier,
     developerName: cleanString(app.developerName, 160) || 'Unknown Developer',
     ...(cleanString(app.subtitle, 2_000) ? { subtitle: cleanString(app.subtitle, 2_000) } : {}),
     ...(cleanString(app.localizedDescription, 2_000) ? { localizedDescription: cleanString(app.localizedDescription, 2_000) } : {}),
-    iconURL: isSafeExternalHttpsUrl(iconCandidate) ? iconCandidate : DEFAULT_ICON_URL,
+    iconURL,
     ...(cleanString(app.tintColor, 32) ? { tintColor: cleanString(app.tintColor, 32) } : {}),
     ...(cleanString(app.category, 60) ? { category: cleanString(app.category, 60) } : {}),
     versions,

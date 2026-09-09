@@ -1,0 +1,90 @@
+name: Publish verified ryP0 IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Successful Xcode build run ID from this repository
+        required: true
+        type: string
+      release_tag:
+        description: Public release tag to create or update
+        required: true
+        default: ios-build
+        type: string
+      prerelease:
+        description: Mark the public release as a prerelease
+        required: true
+        default: true
+        type: boolean
+
+# The private source repository only reads its own artifact. A short-lived
+# GitHub App token is used solely to publish the checked IPA/checksum to the
+# separate public release repository.
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-ryp0-ios-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish verified IPA to public releases
+    runs-on: ubuntu-latest
+    # Create this environment in ryP0-source and put the two GitHub App secrets
+    # there. They must not be copied into an iOS bundle or a public repository.
+    environment: production
+    steps:
+      - name: Create short-lived GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.GITHUB_APP_ID }}
+          private-key: ${{ secrets.GITHUB_APP_PRIVATE_KEY }}
+          owner: Sami-Wali
+          repositories: ryP0-source,ryP0
+
+      - name: Download and verify the Xcode artifact
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          SOURCE_REPOSITORY: ${{ github.repository }}
+        run: |
+          if ! [[ "$SOURCE_RUN_ID" =~ ^[0-9]+$ ]]; then
+            echo 'source_run_id must be a GitHub Actions run ID.' >&2
+            exit 1
+          fi
+          if [ "$(gh run view "$SOURCE_RUN_ID" --repo "$SOURCE_REPOSITORY" --json conclusion --jq .conclusion)" != success ]; then
+            echo 'The requested Xcode build is not successful.' >&2
+            exit 1
+          fi
+          run_number=$(gh run view "$SOURCE_RUN_ID" --repo "$SOURCE_REPOSITORY" --json runNumber --jq .runNumber)
+          gh run download "$SOURCE_RUN_ID" --repo "$SOURCE_REPOSITORY" --name "ryP0-unsigned-${run_number}" --dir artifact
+          cd artifact
+          sha256sum --check ryP0-unsigned.ipa.sha256
+
+      - name: Publish only the IPA and checksum
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          if ! [[ "$RELEASE_TAG" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$ ]]; then
+            echo 'release_tag contains unsupported characters.' >&2
+            exit 1
+          fi
+          cd artifact
+          if gh release view "$RELEASE_TAG" --repo Sami-Wali/ryP0 >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" ryP0-unsigned.ipa ryP0-unsigned.ipa.sha256 --repo Sami-Wali/ryP0 --clobber
+          else
+            release_flags=()
+            if [ "$PRERELEASE" = true ]; then
+              release_flags+=(--prerelease)
+            fi
+            gh release create "$RELEASE_TAG" ryP0-unsigned.ipa ryP0-unsigned.ipa.sha256 \
+              --repo Sami-Wali/ryP0 \
+              --title "ryP0 iOS build" \
+              --notes 'Unsigned iPhone IPA with an embedded JavaScript bundle. Re-sign before installation.' \
+              "${release_flags[@]}"
+          fi

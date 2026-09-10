@@ -29,7 +29,7 @@ export interface PrivateImportInput {
   uploadReleaseTag?: string;
   uploadRunId?: string;
   uploadArtifactName?: string;
-  /** Exact Source.JSON/repo.json app selector; never a fuzzy display-name match. */
+  /** Exact repo.json app selector; never a fuzzy display-name match. */
   selector?: string;
   archiveToR2?: boolean;
 }

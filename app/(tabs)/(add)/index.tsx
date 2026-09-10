@@ -292,7 +292,7 @@ export default function AddAppTabScreen() {
       setGithubName('');
       setGithubDescription('');
       setGithubIconUrl('');
-      Alert.alert('GitHub Import Queued', 'The private importer will prefer Source.JSON, then releases and Actions artifacts, validate the IPA, and publish only verified metadata.');
+      Alert.alert('GitHub Import Queued', 'The private importer will prefer repo.json, then releases and Actions artifacts, validate the IPA, and publish only verified metadata.');
     } catch (error: any) {
       Alert.alert('GitHub Import Failed', error?.message || 'Could not queue this GitHub source for validation.');
     } finally {
@@ -527,7 +527,7 @@ export default function AddAppTabScreen() {
             ) : null}
 
             {importMethod === 'github' ? (
-              <SectionCard title="GitHub App Finder" detail="Checks stable releases first, then beta, nightly, alpha, and Source.JSON metadata. It prefers the app’s real icon over the developer profile image." theme={theme}>
+              <SectionCard title="GitHub App Finder" detail="Checks repo.json first, then stable, beta, nightly, alpha, and Actions builds. It prefers the app’s real icon over the developer profile image." theme={theme}>
                 <FormField theme={theme} label="GitHub Repository" placeholder="owner/repository or https://github.com/owner/repository" value={githubRepository} onChangeText={setGithubRepository} autoCapitalize="none" />
                 <FormField theme={theme} label="Rename App (Optional)" placeholder="Keep the repository name" value={githubName} onChangeText={setGithubName} />
                 <FormField theme={theme} label="Description (Optional)" placeholder="Use the release or repository description" value={githubDescription} onChangeText={setGithubDescription} multiline />

@@ -267,8 +267,8 @@ function findGitHubReleaseIpa(releases: readonly GitHubRelease[]): GitHubRelease
 
 function sourceJsonPathRank(path: string) {
   const depth = path.split('/').length - 1;
-  if (/(?:^|\/)source\.json$/i.test(path)) return depth * 10;
-  if (/(?:^|\/)repo\.json$/i.test(path)) return 100 + depth * 10;
+  if (/(?:^|\/)repo\.json$/i.test(path)) return depth * 10;
+  if (/(?:^|\/)source\.json$/i.test(path)) return 100 + depth * 10;
   return Number.POSITIVE_INFINITY;
 }
 
@@ -319,12 +319,12 @@ async function findGitHubSourceMetadata(
   targetNames: readonly string[],
 ): Promise<GitHubSourceMetadata | null> {
   // Probe common root names too. Git trees may be truncated for very large
-  // repositories, but a root Source.JSON is still inexpensive to verify.
+  // repositories, but a root repo.json is still inexpensive to verify.
   const sourcePaths = [...new Set([
     ...paths.filter((path) => Number.isFinite(sourceJsonPathRank(path))),
+    'repo.json',
     'Source.JSON',
     'source.json',
-    'repo.json',
   ])]
     .sort((left, right) => sourceJsonPathRank(left) - sourceJsonPathRank(right) || left.localeCompare(right));
 
@@ -463,7 +463,7 @@ export async function importLatestGitHubRelease(options: GitHubImportOptions): P
       try {
         return await fetchJson<GitHubRelease[]>(`https://api.github.com/repos/${repoPath}/releases?per_page=100`);
       } catch (error) {
-        // A repository without releases returns 404. Continue to Source.JSON
+        // A repository without releases returns 404. Continue to repo.json
         // and Actions-artifact discovery rather than rejecting it immediately.
         if (error instanceof ImportSourceError && error.status === 404) return [] as GitHubRelease[];
         throw error;
@@ -490,7 +490,7 @@ export async function importLatestGitHubRelease(options: GitHubImportOptions): P
         `Found the GitHub Actions artifact “${cleanString(artifact.name, 120) || 'IPA build'}”. It is a ZIP artifact, so ryP0 automation must verify, extract, and publish its IPA before it can be installed.`,
       );
     }
-    throw new ImportSourceError('No secure IPA was found in stable releases, beta, nightly, alpha, Source.JSON, or public GitHub Actions artifacts.');
+    throw new ImportSourceError('No secure IPA was found in repo.json, stable releases, beta, nightly, alpha, or public GitHub Actions artifacts.');
   }
 
   const selectedVersion: RepoVersion = releaseIpa
@@ -528,7 +528,7 @@ export async function importLatestGitHubRelease(options: GitHubImportOptions): P
     iconURL,
     category: cleanString(options.category, 60) || 'Sideloading',
     ...(sourceMetadata ? { automation: { sourceURL: sourceMetadata.sourceURL } } : {}),
-    // Source.JSON records the upstream metadata that the private updater can
+    // repo.json records the upstream metadata that the private updater can
     // later track. Do not claim a daily updater exists until automation creates
     // a real protected workflow for this app.
     updatePolicy: 'static',

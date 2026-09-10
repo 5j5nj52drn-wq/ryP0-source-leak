@@ -136,7 +136,11 @@ function requestFromIssue(issue: GitHubIssue): AppRequestRecord {
     ? 'direct-url'
     : methodLabel === 'Telegram / R2 import' || methodLabel === 'Message / Telegram link'
       ? 'telegram-r2'
-      : methodLabel === 'Another app repository' || methodLabel === 'Repository / Source.JSON import'
+      : (
+        methodLabel === 'Another app repository'
+        || methodLabel === 'Repository / repo.json import'
+        || methodLabel === 'Repository / Source.JSON import'
+      )
         ? 'repository'
         : 'github';
   const unescapeMarkdown = (value: string) => value.replace(/\\([\\`*_{}[\]<>])/g, '$1');

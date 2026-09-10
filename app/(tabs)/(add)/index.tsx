@@ -591,9 +591,9 @@ export default function AddAppTabScreen() {
                 <Text style={[styles.secondaryButtonText, { color: accent }]}>Refresh Repository from GitHub</Text>
               </TouchableOpacity>
             </SectionCard>
-            <SectionCard title="App Automations" detail="Review the GitHub Actions workflows that update your apps. Telegram importer workflows can be run, edited, disabled, or deleted here." theme={theme}>
+            <SectionCard title="App Automations" detail="Manage the private updater attached to each published app. Run it, update its source, pause daily checks, or remove only its automation." theme={theme}>
               <TouchableOpacity accessibilityRole="button" onPress={() => router.push('/workflows')} style={[styles.submitBtn, { backgroundColor: accent }]}> 
-                <Text style={styles.submitBtnText}>Manage GitHub Workflows</Text>
+                <Text style={styles.submitBtnText}>Manage App Automations</Text>
               </TouchableOpacity>
             </SectionCard>
           </>

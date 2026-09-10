@@ -211,6 +211,7 @@ function assertValidRepositoryData(value: unknown): asserts value is RepoData {
       if (
         !isRecord(version) ||
         !isNonEmptyString(version.version) ||
+        (version.buildVersion !== undefined && !isNonEmptyString(version.buildVersion)) ||
         !isNonEmptyString(version.date) ||
         !isNonEmptyString(version.downloadURL) ||
         !isSafeExternalHttpsUrl(version.downloadURL) ||

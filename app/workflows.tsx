@@ -1,421 +1,390 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Linking } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { Alert } from 'react-native';
 import { Stack } from 'expo-router';
 import { Button, FieldGroup, Host, ListItem, Text, TextInput, useNativeState } from '@expo/ui';
-import { useRepoStore } from '../store/useRepoStore';
 import {
-  deleteGitHubWorkflowFile,
-  dispatchGitHubWorkflow,
-  getLatestGitHubWorkflowRun,
-  listGitHubWorkflows,
-  readGitHubWorkflowFile,
-  saveGitHubWorkflowFile,
-  setGitHubWorkflowEnabled,
-  type GitHubWorkflow,
-  type GitHubWorkflowFile,
-  type GitHubWorkflowRun,
-} from '../services/github-workflows';
+  fetchAppAutomationSnapshot,
+  queueAppAutomationMutation,
+  runAppAutomation,
+  type AppAutomationConfiguration,
+  type AppAutomationMutation,
+  type AppAutomationSnapshot,
+  type AppAutomationSource,
+} from '../services/app-automations';
+import { useRepoStore } from '../store/useRepoStore';
 
-function humanDate(value?: string): string {
-  if (!value) return 'Not available';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  }).format(date);
+function sourceLabel(source: AppAutomationSource): string {
+  switch (source.kind) {
+    case 'github_release':
+      return 'GitHub Releases';
+    case 'archive':
+      return 'GitHub Actions Archive';
+    case 'gitlab_release':
+      return 'GitLab Release';
+    case 'repo_json':
+      return 'External repo.json';
+    case 'telegram':
+      return 'Telegram';
+  }
 }
 
-function workflowStatusLabel(workflow: GitHubWorkflow): string {
-  return workflow.state === 'active'
-    ? 'Active'
-    : workflow.state === 'disabled_manually'
-      ? 'Disabled'
-      : workflow.state.replace(/^disabled_/, 'Disabled · ');
+function sourcePrimary(source: AppAutomationSource): string {
+  switch (source.kind) {
+    case 'github_release':
+      return source.repository;
+    case 'archive':
+    case 'repo_json':
+    case 'telegram':
+      return source.url;
+    case 'gitlab_release':
+      return source.apiURL;
+  }
 }
 
-function runStatusLabel(run: GitHubWorkflowRun | null): string {
-  if (!run) return 'No runs found';
-  if (run.status !== 'completed') return `${run.status[0]?.toUpperCase() ?? ''}${run.status.slice(1)}`;
-  if (!run.conclusion) return 'Completed';
-  return run.conclusion[0].toUpperCase() + run.conclusion.slice(1).replace(/_/g, ' ');
+function sourceSelector(source: AppAutomationSource): string {
+  switch (source.kind) {
+    case 'github_release':
+    case 'gitlab_release':
+      return source.assetPattern;
+    case 'repo_json':
+      return source.appNamePattern;
+    case 'archive':
+    case 'telegram':
+      return '';
+  }
 }
 
-function isTelegramWorkflow(workflow: GitHubWorkflow | null): boolean {
-  if (!workflow) return false;
-  return /telegram|cloudflare|\br2\b/i.test(`${workflow.name} ${workflow.path}`);
+function primaryPlaceholder(source: AppAutomationSource): string {
+  return source.kind === 'github_release'
+    ? 'owner/repository'
+    : source.kind === 'gitlab_release'
+      ? 'GitLab releases API URL'
+      : source.kind === 'repo_json'
+        ? 'Public repo.json URL'
+        : source.kind === 'telegram'
+          ? 'Public Telegram channel URL'
+          : 'Public ZIP archive URL';
 }
 
-function matchingAppName(workflow: GitHubWorkflow, apps: { name: string; bundleIdentifier: string }[]): string | null {
-  const source = `${workflow.name} ${workflow.path}`.toLowerCase().replace(/[^a-z0-9]/g, '');
-  const match = apps.find((app) => {
-    const name = app.name.toLowerCase().replace(/[^a-z0-9]/g, '');
-    const bundle = app.bundleIdentifier.toLowerCase().replace(/[^a-z0-9]/g, '');
-    return name.length > 2 && (source.includes(name) || name.includes(source) || source.includes(bundle));
-  });
-  return match?.name ?? null;
+function selectorPlaceholder(source: AppAutomationSource): string {
+  return source.kind === 'repo_json' ? 'Exact app-name pattern' : 'IPA asset pattern';
 }
 
-function workflowPurpose(workflow: GitHubWorkflow, apps: { name: string; bundleIdentifier: string }[]): string {
-  if (isTelegramWorkflow(workflow)) return 'Telegram → Cloudflare R2 importer';
-  if (/update all/i.test(workflow.name)) return 'Repository-wide updater';
-  if (/pages-build/i.test(workflow.name)) return 'GitHub Pages deployment';
-  if (/builder/i.test(workflow.name)) return 'Repository app builder';
-  const appName = matchingAppName(workflow, apps);
-  return appName ? `App updater · ${appName}` : 'Repository automation';
+function replaceSourceValues(
+  source: AppAutomationSource,
+  primary: string,
+  selector: string,
+): AppAutomationSource {
+  switch (source.kind) {
+    case 'github_release':
+      return { ...source, repository: primary, assetPattern: selector };
+    case 'archive':
+      return { ...source, url: primary };
+    case 'gitlab_release':
+      return { ...source, apiURL: primary, assetPattern: selector };
+    case 'repo_json':
+      return { ...source, url: primary, appNamePattern: selector };
+    case 'telegram':
+      return { ...source, url: primary };
+  }
 }
 
-export default function WorkflowManagerScreen() {
+function userMessage(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message ? error.message : fallback;
+}
+
+export default function AppAutomationManagerScreen() {
   const isDeveloperMode = useRepoStore((state) => state.isDeveloperMode);
   const repositoryApps = useRepoStore((state) => state.repo?.apps ?? []);
-  const [workflows, setWorkflows] = useState<GitHubWorkflow[]>([]);
-  const [selectedWorkflow, setSelectedWorkflow] = useState<GitHubWorkflow | null>(null);
-  const [workflowFile, setWorkflowFile] = useState<GitHubWorkflowFile | null>(null);
-  const [latestRun, setLatestRun] = useState<GitHubWorkflowRun | null>(null);
-  const editorText = useNativeState('');
-  const telegramChannel = useNativeState('');
-  const telegramAppName = useNativeState('');
+  const [snapshot, setSnapshot] = useState<AppAutomationSnapshot | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [isLoadingWorkflow, setIsLoadingWorkflow] = useState(false);
-  const [isMutating, setIsMutating] = useState(false);
-  const selectionRequestRef = useRef(0);
+  const [isWorking, setIsWorking] = useState(false);
+  const displayName = useNativeState('');
+  const bundleIdentifier = useNativeState('');
+  const bundlePattern = useNativeState('');
+  const primaryValue = useNativeState('');
+  const selectorValue = useNativeState('');
 
-  const loadWorkflows = useCallback(async (showFailure = false) => {
+  const selected = useMemo(
+    () => snapshot?.apps.find((app) => app.id === selectedId) ?? null,
+    [selectedId, snapshot?.apps],
+  );
+  const publicApp = useMemo(
+    () => selected
+      ? repositoryApps.find((app) => (
+        app.automation?.configId === selected.id ||
+        app.bundleIdentifier === selected.bundleIdentifier
+      )) ?? null
+      : null,
+    [repositoryApps, selected],
+  );
+
+  const selectApp = useCallback((app: AppAutomationConfiguration) => {
+    setSelectedId(app.id);
+    displayName.value = app.displayName;
+    bundleIdentifier.value = app.bundleIdentifier;
+    bundlePattern.value = app.bundleIdentifierPattern ?? '';
+    primaryValue.value = sourcePrimary(app.source);
+    selectorValue.value = sourceSelector(app.source);
+  }, [bundleIdentifier, bundlePattern, displayName, primaryValue, selectorValue]);
+
+  const load = useCallback(async (showFailure = false) => {
     if (!isDeveloperMode) {
-      setWorkflows([]);
+      setSnapshot(null);
+      setSelectedId(null);
       setIsLoading(false);
       return;
     }
-
     setIsLoading(true);
     try {
-      setWorkflows(await listGitHubWorkflows());
-    } catch (error: any) {
+      const next = await fetchAppAutomationSnapshot();
+      setSnapshot(next);
+      setSelectedId((current) => {
+        if (current && next.apps.some((app) => app.id === current)) return current;
+        const first = next.apps[0] ?? null;
+        if (first) {
+          displayName.value = first.displayName;
+          bundleIdentifier.value = first.bundleIdentifier;
+          bundlePattern.value = first.bundleIdentifierPattern ?? '';
+          primaryValue.value = sourcePrimary(first.source);
+          selectorValue.value = sourceSelector(first.source);
+        }
+        return first?.id ?? null;
+      });
+    } catch (error) {
       if (showFailure) {
-        Alert.alert('Could Not Load Workflows', error?.message || 'Check your GitHub credentials and connection.');
+        Alert.alert('Could Not Load Automations', userMessage(error, 'Check your GitHub access and connection.'));
       }
     } finally {
       setIsLoading(false);
     }
-  }, [isDeveloperMode]);
+  }, [bundleIdentifier, bundlePattern, displayName, isDeveloperMode, primaryValue, selectorValue]);
 
   useEffect(() => {
-    void loadWorkflows();
-  }, [loadWorkflows]);
+    void load();
+  }, [load]);
 
-  const chooseWorkflow = useCallback(async (workflow: GitHubWorkflow) => {
-    const requestId = selectionRequestRef.current + 1;
-    selectionRequestRef.current = requestId;
-    setSelectedWorkflow(workflow);
-    setWorkflowFile(null);
-    setLatestRun(null);
-    editorText.value = '';
-    setIsLoadingWorkflow(true);
-
+  const runNow = useCallback(async () => {
+    if (!selected) return;
+    setIsWorking(true);
     try {
-      const file = await readGitHubWorkflowFile(workflow.path);
-      if (selectionRequestRef.current !== requestId) return;
-      setWorkflowFile(file);
-      editorText.value = file.content;
-
-      const run = await getLatestGitHubWorkflowRun(workflow.id);
-      if (selectionRequestRef.current !== requestId) return;
-      setLatestRun(run);
-    } catch (error: any) {
-      if (selectionRequestRef.current === requestId) {
-        Alert.alert('Could Not Open Workflow', error?.message || 'GitHub could not return this workflow.');
-      }
+      await runAppAutomation(selected.id);
+      Alert.alert('Updater Started', `${selected.displayName} is queued in private GitHub automation.`);
+    } catch (error) {
+      Alert.alert('Could Not Start Updater', userMessage(error, 'GitHub could not queue this updater.'));
     } finally {
-      if (selectionRequestRef.current === requestId) setIsLoadingWorkflow(false);
+      setIsWorking(false);
     }
-  }, []);
+  }, [selected]);
 
-  const reloadSelectedWorkflow = useCallback(async () => {
-    if (!selectedWorkflow) return;
-    await chooseWorkflow(selectedWorkflow);
-  }, [chooseWorkflow, selectedWorkflow]);
-
-  const saveWorkflow = useCallback(async () => {
-    if (!selectedWorkflow || !workflowFile) return;
-
-    setIsMutating(true);
+  const queueMutation = useCallback(async (
+    action: AppAutomationMutation,
+    replacement?: AppAutomationConfiguration,
+  ) => {
+    if (!snapshot || !selected) return;
+    setIsWorking(true);
     try {
-      const saved = await saveGitHubWorkflowFile(
-        selectedWorkflow.path,
-        editorText.value,
-        workflowFile.sha,
-        `Update ${selectedWorkflow.name} workflow via ryP0 CMS`,
+      await queueAppAutomationMutation(snapshot, action, selected.id, replacement);
+      Alert.alert(
+        'Change Queued',
+        'The private management workflow will validate and commit this change. Reload after the GitHub run finishes.',
       );
-      setWorkflowFile((current) => current ? { ...current, sha: saved.contentSha, content: editorText.value } : current);
-      Alert.alert('Workflow Saved', `${selectedWorkflow.name} was committed to GitHub.`);
-      void loadWorkflows();
-    } catch (error: any) {
-      Alert.alert('Could Not Save Workflow', error?.message || 'Reload the workflow before trying again.');
+    } catch (error) {
+      Alert.alert('Could Not Change Automation', userMessage(error, 'GitHub could not queue this change.'));
     } finally {
-      setIsMutating(false);
+      setIsWorking(false);
     }
-  }, [editorText, loadWorkflows, selectedWorkflow, workflowFile]);
+  }, [selected, snapshot]);
 
-  const runWorkflow = useCallback(async () => {
-    if (!selectedWorkflow) return;
-    const usesTelegram = isTelegramWorkflow(selectedWorkflow);
-    const channel = telegramChannel.value.trim().replace(/^@/, '');
-    const appName = telegramAppName.value.trim();
+  const save = useCallback(() => {
+    if (!selected) return;
+    const replacement: AppAutomationConfiguration = {
+      ...selected,
+      displayName: displayName.value.trim(),
+      bundleIdentifier: bundleIdentifier.value.trim(),
+      ...(bundlePattern.value.trim()
+        ? { bundleIdentifierPattern: bundlePattern.value.trim() }
+        : { bundleIdentifierPattern: undefined }),
+      source: replaceSourceValues(
+        selected.source,
+        primaryValue.value.trim(),
+        selectorValue.value.trim(),
+      ),
+    };
+    void queueMutation('update', replacement);
+  }, [bundleIdentifier, bundlePattern, displayName, primaryValue, queueMutation, selected, selectorValue]);
 
-    if (usesTelegram && (!channel || !appName)) {
-      Alert.alert('Telegram Inputs Required', 'Enter the source channel and the exact app name already in repo.json.');
-      return;
-    }
-
-    setIsMutating(true);
-    try {
-      await dispatchGitHubWorkflow(
-        selectedWorkflow.id,
-        usesTelegram ? { channel_username: channel, app_name: appName } : undefined,
-      );
-      Alert.alert('Workflow Started', `${selectedWorkflow.name} is queued on GitHub Actions.`);
-      void reloadSelectedWorkflow();
-    } catch (error: any) {
-      Alert.alert('Could Not Start Workflow', error?.message || 'GitHub could not queue this workflow.');
-    } finally {
-      setIsMutating(false);
-    }
-  }, [reloadSelectedWorkflow, selectedWorkflow, telegramAppName, telegramChannel]);
-
-  const toggleWorkflow = useCallback(() => {
-    if (!selectedWorkflow) return;
-    const enabling = selectedWorkflow.state !== 'active';
-    const action = enabling ? 'Enable' : 'Disable';
+  const toggleEnabled = useCallback(() => {
+    if (!selected) return;
+    const enabled = selected.enabled !== false;
+    const action: AppAutomationMutation = enabled ? 'disable' : 'enable';
     Alert.alert(
-      `${action} ${selectedWorkflow.name}?`,
-      enabling
-        ? 'This lets GitHub Actions run this workflow again.'
-        : 'This stops GitHub Actions from running this workflow until you enable it again.',
+      `${enabled ? 'Disable' : 'Enable'} ${selected.displayName}?`,
+      enabled
+        ? 'Daily updates will skip this app. Its public catalog entry and IPA history stay untouched.'
+        : 'This app will return to the daily update queue.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
-          text: action,
-          style: enabling ? 'default' : 'destructive',
-          onPress: () => {
-            void (async () => {
-              setIsMutating(true);
-              try {
-                await setGitHubWorkflowEnabled(selectedWorkflow.id, enabling);
-                setSelectedWorkflow((current) => current ? { ...current, state: enabling ? 'active' : 'disabled_manually' } : current);
-                setWorkflows((current) => current.map((workflow) => (
-                  workflow.id === selectedWorkflow.id
-                    ? { ...workflow, state: enabling ? 'active' : 'disabled_manually' }
-                    : workflow
-                )));
-              } catch (error: any) {
-                Alert.alert(`Could Not ${action} Workflow`, error?.message || 'GitHub could not change this workflow.');
-              } finally {
-                setIsMutating(false);
-              }
-            })();
-          },
+          text: enabled ? 'Disable' : 'Enable',
+          style: enabled ? 'destructive' : 'default',
+          onPress: () => void queueMutation(action),
         },
       ],
     );
-  }, [selectedWorkflow]);
+  }, [queueMutation, selected]);
 
-  const deleteWorkflow = useCallback(() => {
-    if (!selectedWorkflow || !workflowFile) return;
+  const remove = useCallback(() => {
+    if (!selected) return;
     Alert.alert(
-      `Delete ${selectedWorkflow.name}?`,
-      'This removes the workflow file from GitHub. Existing workflow runs remain in GitHub history.',
+      `Remove ${selected.displayName} automation?`,
+      'This removes only its private updater and manual launcher. It does not delete the app, repo.json data, or IPA releases.',
       [
         { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete Workflow',
-          style: 'destructive',
-          onPress: () => {
-            void (async () => {
-              setIsMutating(true);
-              try {
-                await deleteGitHubWorkflowFile(
-                  selectedWorkflow.path,
-                  workflowFile.sha,
-                  `Delete ${selectedWorkflow.name} workflow via ryP0 CMS`,
-                );
-                setWorkflows((current) => current.filter((workflow) => workflow.id !== selectedWorkflow.id));
-                setSelectedWorkflow(null);
-                setWorkflowFile(null);
-                setLatestRun(null);
-                editorText.value = '';
-                Alert.alert('Workflow Deleted', `${selectedWorkflow.name} was removed from GitHub.`);
-              } catch (error: any) {
-                Alert.alert('Could Not Delete Workflow', error?.message || 'Reload the workflow before trying again.');
-              } finally {
-                setIsMutating(false);
-              }
-            })();
-          },
-        },
+        { text: 'Remove Automation', style: 'destructive', onPress: () => void queueMutation('delete') },
       ],
     );
-  }, [editorText, selectedWorkflow, workflowFile]);
+  }, [queueMutation, selected]);
 
-  const changeEditorText = useCallback((value: string) => {
+  const changeDisplayName = useCallback((value: string) => {
     'worklet';
-    editorText.value = value;
-  }, [editorText]);
-
-  const changeTelegramChannel = useCallback((value: string) => {
+    displayName.value = value;
+  }, [displayName]);
+  const changeBundleIdentifier = useCallback((value: string) => {
     'worklet';
-    telegramChannel.value = value;
-  }, [telegramChannel]);
-
-  const changeTelegramAppName = useCallback((value: string) => {
+    bundleIdentifier.value = value;
+  }, [bundleIdentifier]);
+  const changeBundlePattern = useCallback((value: string) => {
     'worklet';
-    telegramAppName.value = value;
-  }, [telegramAppName]);
-
-  const selectedPurpose = useMemo(
-    () => selectedWorkflow ? workflowPurpose(selectedWorkflow, repositoryApps) : null,
-    [repositoryApps, selectedWorkflow],
-  );
-  const hasUnsafePositionSelector = useMemo(
-    () => Boolean(workflowFile && /\.apps\s*\[\s*\d+\s*\]/.test(workflowFile.content)),
-    [workflowFile],
-  );
+    bundlePattern.value = value;
+  }, [bundlePattern]);
+  const changePrimary = useCallback((value: string) => {
+    'worklet';
+    primaryValue.value = value;
+  }, [primaryValue]);
+  const changeSelector = useCallback((value: string) => {
+    'worklet';
+    selectorValue.value = value;
+  }, [selectorValue]);
 
   return (
     <>
-      <Stack.Screen options={{ title: 'Workflow Manager', headerLargeTitle: true }} />
+      <Stack.Screen options={{ title: 'Manage Apps', headerLargeTitle: true }} />
       <Stack.Toolbar placement="right">
-        <Stack.Toolbar.Button icon="arrow.clockwise" onPress={() => void loadWorkflows(true)} />
+        <Stack.Toolbar.Button icon="arrow.clockwise" onPress={() => void load(true)} />
       </Stack.Toolbar>
       <Host style={{ flex: 1, width: '100%' }}>
         {!isDeveloperMode ? (
           <FieldGroup>
             <FieldGroup.Section title="Developer Access Required">
-              <ListItem supportingText="Sign in with a verified GitHub token in Settings to manage repository automations.">
-                <Text>Workflow Manager Is Locked</Text>
+              <ListItem supportingText="Unlock the verified Sami-Wali GitHub account in Settings to manage private app automation.">
+                <Text>App Automation Is Locked</Text>
               </ListItem>
             </FieldGroup.Section>
           </FieldGroup>
         ) : (
           <FieldGroup>
-            <FieldGroup.Section title="Automations">
-              <ListItem supportingText="Workflows update apps, import Telegram uploads, and publish repository changes. Select one to inspect, run, edit, disable, or delete it.">
-                <Text>{isLoading ? 'Loading GitHub Actions…' : `${workflows.length} GitHub workflow${workflows.length === 1 ? '' : 's'}`}</Text>
+            <FieldGroup.Section title="Private Automation">
+              <ListItem supportingText="Each app has a visible manual launcher, while every launcher uses the same validated updater engine.">
+                <Text>{isLoading ? 'Loading automations…' : `${snapshot?.apps.length ?? 0} managed app updaters`}</Text>
               </ListItem>
-              <Button onPress={() => void loadWorkflows(true)} disabled={isLoading || isMutating} variant="outlined">
-                <Text>{isLoading ? 'Refreshing…' : 'Refresh Workflows'}</Text>
+              <Button onPress={() => void load(true)} disabled={isLoading || isWorking} variant="outlined">
+                <Text>{isLoading ? 'Refreshing…' : 'Reload from GitHub'}</Text>
               </Button>
             </FieldGroup.Section>
 
-            <FieldGroup.Section title="Repository Workflows">
-              {workflows.map((workflow) => (
+            <FieldGroup.Section title="Apps">
+              {snapshot?.apps.map((app) => (
                 <ListItem
-                  key={workflow.id}
-                  onPress={() => void chooseWorkflow(workflow)}
-                  supportingText={workflowPurpose(workflow, repositoryApps)}
-                  trailing={<Text>{workflowStatusLabel(workflow)}</Text>}
+                  key={app.id}
+                  onPress={() => selectApp(app)}
+                  supportingText={`${sourceLabel(app.source)} · ${app.bundleIdentifier}`}
+                  trailing={<Text>{app.enabled === false ? 'Paused' : app.id === selectedId ? 'Selected' : 'Daily'}</Text>}
                 >
-                  <Text>{workflow.name}</Text>
+                  <Text>{app.displayName}</Text>
                 </ListItem>
               ))}
-              {!isLoading && !workflows.length ? (
-                <ListItem supportingText="GitHub did not return any workflows. Check the token’s Actions and Contents permissions.">
-                  <Text>No Workflows Found</Text>
+              {!isLoading && !snapshot?.apps.length ? (
+                <ListItem supportingText="Check that your GitHub token can read Sami-Wali/ryP0-automation.">
+                  <Text>No App Automations Found</Text>
                 </ListItem>
               ) : null}
             </FieldGroup.Section>
 
-            {selectedWorkflow ? (
+            {selected ? (
               <>
-                <FieldGroup.Section title={selectedWorkflow.name}>
-                  <ListItem supportingText={selectedPurpose ?? undefined} trailing={<Text>{workflowStatusLabel(selectedWorkflow)}</Text>}>
-                    <Text>Automation</Text>
-                  </ListItem>
-                  <ListItem supportingText={selectedWorkflow.path} trailing={<Text>{isLoadingWorkflow ? 'Loading…' : 'Loaded'}</Text>}>
-                    <Text>Workflow File</Text>
-                  </ListItem>
+                <FieldGroup.Section title={selected.displayName}>
                   <ListItem
-                    onPress={() => latestRun?.htmlUrl ? void Linking.openURL(latestRun.htmlUrl) : undefined}
-                    supportingText={latestRun ? `${humanDate(latestRun.updatedAt || latestRun.createdAt)} · ${latestRun.event || 'manual run'}` : 'This workflow has not run yet.'}
-                    trailing={<Text>{runStatusLabel(latestRun)}</Text>}
+                    supportingText={publicApp?.versions[0]
+                      ? `Public version ${publicApp.versions[0].version}`
+                      : 'No matching public catalog app was found.'}
+                    trailing={<Text>{selected.enabled === false ? 'Paused' : 'Active'}</Text>}
                   >
-                    <Text>Latest Run</Text>
+                    <Text>{sourceLabel(selected.source)}</Text>
                   </ListItem>
-                  {hasUnsafePositionSelector ? (
-                    <ListItem
-                      supportingText="This can update the wrong app after the repository is reordered. Replace apps[index] with a bundleIdentifier selector before saving."
-                      trailing={<Text>Fix needed</Text>}
-                    >
-                      <Text>Unsafe repo.json Target</Text>
-                    </ListItem>
-                  ) : null}
-                  <Button onPress={() => void runWorkflow()} disabled={isMutating || isLoadingWorkflow || selectedWorkflow.state !== 'active'}>
-                    <Text>{isMutating ? 'Working…' : isTelegramWorkflow(selectedWorkflow) ? 'Run Telegram Import' : 'Run Workflow'}</Text>
-                  </Button>
-                  {selectedWorkflow.htmlUrl ? (
-                    <Button onPress={() => void Linking.openURL(selectedWorkflow.htmlUrl!)} disabled={isMutating} variant="outlined">
-                      <Text>Open in GitHub</Text>
-                    </Button>
-                  ) : null}
-                </FieldGroup.Section>
-
-                {isTelegramWorkflow(selectedWorkflow) ? (
-                  <FieldGroup.Section title="Telegram Import Inputs">
-                    <TextInput
-                      value={telegramChannel}
-                      onChangeText={changeTelegramChannel}
-                      placeholder="Channel username, without @"
-                      autoCapitalize="none"
-                      autoCorrect={false}
-                    />
-                    <TextInput
-                      value={telegramAppName}
-                      onChangeText={changeTelegramAppName}
-                      placeholder="Exact app name in repo.json"
-                    />
-                    <FieldGroup.SectionFooter>
-                      <Text>The workflow fetches the newest IPA from that channel, places it in Cloudflare R2, and updates the matching repository app.</Text>
-                    </FieldGroup.SectionFooter>
-                  </FieldGroup.Section>
-                ) : null}
-
-                <FieldGroup.Section title="Workflow Source">
-                  {workflowFile ? (
-                    <TextInput
-                      value={editorText}
-                      onChangeText={changeEditorText}
-                      multiline
-                      numberOfLines={18}
-                      autoCapitalize="none"
-                      autoCorrect={false}
-                      textAlign="left"
-                      placeholder="Workflow YAML"
-                    />
-                  ) : (
-                    <ListItem supportingText="The file source is loading from GitHub.">
-                      <Text>Loading Workflow Source</Text>
-                    </ListItem>
-                  )}
-                  <Button onPress={() => void saveWorkflow()} disabled={!workflowFile || isMutating || isLoadingWorkflow}>
-                    <Text>{isMutating ? 'Saving…' : 'Save Workflow Source'}</Text>
-                  </Button>
-                  <Button onPress={() => void reloadSelectedWorkflow()} disabled={isMutating || isLoadingWorkflow} variant="outlined">
-                    <Text>Discard Local Changes & Reload</Text>
+                  <ListItem supportingText={publicApp?.status?.message ?? 'No updater status message yet.'}>
+                    <Text>Latest Status</Text>
+                  </ListItem>
+                  <Button onPress={() => void runNow()} disabled={isWorking || selected.enabled === false}>
+                    <Text>{isWorking ? 'Working…' : 'Run This App Updater'}</Text>
                   </Button>
                   <FieldGroup.SectionFooter>
-                    <Text>Saving uses the current GitHub file SHA, so it cannot overwrite a workflow another person changed first.</Text>
+                    <Text>The run validates the IPA bundle ID and embedded version before it can change repo.json.</Text>
                   </FieldGroup.SectionFooter>
                 </FieldGroup.Section>
 
-                <FieldGroup.Section title="Workflow Controls">
-                  <Button onPress={toggleWorkflow} disabled={isMutating || isLoadingWorkflow} variant="outlined">
-                    <Text>{selectedWorkflow.state === 'active' ? 'Disable Workflow' : 'Enable Workflow'}</Text>
-                  </Button>
-                  <Button onPress={deleteWorkflow} disabled={!workflowFile || isMutating || isLoadingWorkflow} variant="text">
-                    <Text>Delete Workflow</Text>
+                <FieldGroup.Section title="Updater Configuration">
+                  <TextInput value={displayName} onChangeText={changeDisplayName} placeholder="Display name" />
+                  <TextInput
+                    value={bundleIdentifier}
+                    onChangeText={changeBundleIdentifier}
+                    placeholder="Bundle identifier"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+                  <TextInput
+                    value={bundlePattern}
+                    onChangeText={changeBundlePattern}
+                    placeholder="Allowed bundle pattern (optional)"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+                  <TextInput
+                    value={primaryValue}
+                    onChangeText={changePrimary}
+                    placeholder={primaryPlaceholder(selected.source)}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+                  {selected.source.kind === 'github_release' ||
+                  selected.source.kind === 'gitlab_release' ||
+                  selected.source.kind === 'repo_json' ? (
+                    <TextInput
+                      value={selectorValue}
+                      onChangeText={changeSelector}
+                      placeholder={selectorPlaceholder(selected.source)}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                    />
+                  ) : null}
+                  <Button onPress={save} disabled={isWorking}>
+                    <Text>Validate & Save Automation</Text>
                   </Button>
                   <FieldGroup.SectionFooter>
-                    <Text>Disable pauses runs but retains the source. Delete permanently removes this workflow file after confirmation.</Text>
+                    <Text>Saving queues a private GitHub workflow. It cannot overwrite a newer configuration loaded by another session.</Text>
+                  </FieldGroup.SectionFooter>
+                </FieldGroup.Section>
+
+                <FieldGroup.Section title="Controls">
+                  <Button onPress={toggleEnabled} disabled={isWorking} variant="outlined">
+                    <Text>{selected.enabled === false ? 'Enable Daily Updates' : 'Pause Daily Updates'}</Text>
+                  </Button>
+                  <Button onPress={remove} disabled={isWorking} variant="text">
+                    <Text>Remove App Automation</Text>
+                  </Button>
+                  <FieldGroup.SectionFooter>
+                    <Text>Pause is reversible. Remove affects only automation; it never deletes the public app or release history.</Text>
                   </FieldGroup.SectionFooter>
                 </FieldGroup.Section>
               </>

@@ -1,5 +1,6 @@
 export interface RepoVersion {
   version: string;
+  buildVersion?: string;
   date: string;
   downloadURL: string;
   size: number;
@@ -19,6 +20,8 @@ export type AppUpdatePolicy = 'daily' | 'static';
 export interface RepoAppAutomation {
   workflowPath?: string;
   sourceURL?: string;
+  repository?: string;
+  configId?: string;
 }
 
 export interface RepoAppStatus {

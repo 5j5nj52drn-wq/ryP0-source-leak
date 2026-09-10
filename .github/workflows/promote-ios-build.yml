@@ -40,8 +40,8 @@ jobs:
         id: source-token
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
         with:
-          app-id: ${{ secrets.GITHUB_APP_ID }}
-          private-key: ${{ secrets.GITHUB_APP_PRIVATE_KEY }}
+          app-id: ${{ secrets.RYP0_APP_ID }}
+          private-key: ${{ secrets.RYP0_APP_PRIVATE_KEY }}
           owner: Sami-Wali
           repositories: ryP0-source
           permission-actions: read
@@ -51,8 +51,8 @@ jobs:
         id: publisher-token
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
         with:
-          app-id: ${{ secrets.GITHUB_APP_ID }}
-          private-key: ${{ secrets.GITHUB_APP_PRIVATE_KEY }}
+          app-id: ${{ secrets.RYP0_APP_ID }}
+          private-key: ${{ secrets.RYP0_APP_PRIVATE_KEY }}
           owner: Sami-Wali
           repositories: ryP0
           permission-contents: write

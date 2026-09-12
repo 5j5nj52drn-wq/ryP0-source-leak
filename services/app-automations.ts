@@ -44,6 +44,13 @@ export interface GitLabReleaseAutomationSource {
   versionMode: VersionMode;
 }
 
+export interface ForgejoReleaseAutomationSource {
+  kind: 'forgejo_release';
+  apiURL: string;
+  assetPattern: string;
+  versionMode: VersionMode;
+}
+
 export interface RepositoryAutomationSource {
   kind: 'repo_json';
   url: string;
@@ -62,6 +69,7 @@ export type AppAutomationSource =
   | GitHubReleaseAutomationSource
   | ArchiveAutomationSource
   | GitLabReleaseAutomationSource
+  | ForgejoReleaseAutomationSource
   | RepositoryAutomationSource
   | TelegramAutomationSource;
 
@@ -69,6 +77,7 @@ export interface AppAutomationConfiguration {
   id: string;
   displayName: string;
   bundleIdentifier: string;
+  sourceBundleIdentifier: string;
   bundleIdentifierPattern?: string;
   enabled?: boolean;
   source: AppAutomationSource;
@@ -205,6 +214,14 @@ function validateSource(value: unknown, appId: string): AppAutomationSource {
         : {}),
     };
   }
+  if (value.kind === 'forgejo_release') {
+    return {
+      kind: 'forgejo_release',
+      apiURL: validateUrl(value.apiURL, `${appId} Forgejo API URL`),
+      assetPattern: validatePattern(value.assetPattern, `${appId} IPA asset pattern`),
+      versionMode,
+    };
+  }
   if (value.kind === 'repo_json') {
     return {
       kind: 'repo_json',
@@ -233,7 +250,16 @@ function validateApp(value: unknown): AppAutomationConfiguration {
   }
   const id = requiredString(value.id, 'App automation id', 64);
   const bundleIdentifier = requiredString(value.bundleIdentifier, `${id} bundle identifier`, 255);
-  if (!SAFE_ID.test(id) || !SAFE_BUNDLE_IDENTIFIER.test(bundleIdentifier)) {
+  const sourceBundleIdentifier = requiredString(
+    value.sourceBundleIdentifier,
+    `${id} source bundle identifier`,
+    255,
+  );
+  if (
+    !SAFE_ID.test(id) ||
+    !SAFE_BUNDLE_IDENTIFIER.test(bundleIdentifier) ||
+    !SAFE_BUNDLE_IDENTIFIER.test(sourceBundleIdentifier)
+  ) {
     throw new GitHubApiError(`${id} has an invalid identity.`, 0, 'INVALID_RESPONSE');
   }
   if (value.enabled !== undefined && typeof value.enabled !== 'boolean') {
@@ -250,6 +276,7 @@ function validateApp(value: unknown): AppAutomationConfiguration {
     id,
     displayName: requiredString(value.displayName, `${id} display name`, 160),
     bundleIdentifier,
+    sourceBundleIdentifier,
     ...(typeof value.bundleIdentifierPattern === 'string'
       ? { bundleIdentifierPattern: validatePattern(value.bundleIdentifierPattern, `${id} bundle pattern`) }
       : {}),

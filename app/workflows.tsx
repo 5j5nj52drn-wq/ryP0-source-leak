@@ -21,6 +21,8 @@ function sourceLabel(source: AppAutomationSource): string {
       return 'GitHub Actions Archive';
     case 'gitlab_release':
       return 'GitLab Release';
+    case 'forgejo_release':
+      return 'Forgejo Release';
     case 'repo_json':
       return 'External repo.json';
     case 'telegram':
@@ -37,6 +39,7 @@ function sourcePrimary(source: AppAutomationSource): string {
     case 'telegram':
       return source.url;
     case 'gitlab_release':
+    case 'forgejo_release':
       return source.apiURL;
   }
 }
@@ -45,6 +48,7 @@ function sourceSelector(source: AppAutomationSource): string {
   switch (source.kind) {
     case 'github_release':
     case 'gitlab_release':
+    case 'forgejo_release':
       return source.assetPattern;
     case 'repo_json':
       return source.appNamePattern;
@@ -59,6 +63,8 @@ function primaryPlaceholder(source: AppAutomationSource): string {
     ? 'owner/repository'
     : source.kind === 'gitlab_release'
       ? 'GitLab releases API URL'
+      : source.kind === 'forgejo_release'
+        ? 'Forgejo releases API URL'
       : source.kind === 'repo_json'
         ? 'Public repo.json URL'
         : source.kind === 'telegram'
@@ -81,6 +87,7 @@ function replaceSourceValues(
     case 'archive':
       return { ...source, url: primary };
     case 'gitlab_release':
+    case 'forgejo_release':
       return { ...source, apiURL: primary, assetPattern: selector };
     case 'repo_json':
       return { ...source, url: primary, appNamePattern: selector };
@@ -102,6 +109,7 @@ export default function AppAutomationManagerScreen() {
   const [isWorking, setIsWorking] = useState(false);
   const displayName = useNativeState('');
   const bundleIdentifier = useNativeState('');
+  const sourceBundleIdentifier = useNativeState('');
   const bundlePattern = useNativeState('');
   const primaryValue = useNativeState('');
   const selectorValue = useNativeState('');
@@ -124,10 +132,11 @@ export default function AppAutomationManagerScreen() {
     setSelectedId(app.id);
     displayName.value = app.displayName;
     bundleIdentifier.value = app.bundleIdentifier;
+    sourceBundleIdentifier.value = app.sourceBundleIdentifier;
     bundlePattern.value = app.bundleIdentifierPattern ?? '';
     primaryValue.value = sourcePrimary(app.source);
     selectorValue.value = sourceSelector(app.source);
-  }, [bundleIdentifier, bundlePattern, displayName, primaryValue, selectorValue]);
+  }, [bundleIdentifier, bundlePattern, displayName, primaryValue, selectorValue, sourceBundleIdentifier]);
 
   const load = useCallback(async (showFailure = false) => {
     if (!isDeveloperMode) {
@@ -146,6 +155,7 @@ export default function AppAutomationManagerScreen() {
         if (first) {
           displayName.value = first.displayName;
           bundleIdentifier.value = first.bundleIdentifier;
+          sourceBundleIdentifier.value = first.sourceBundleIdentifier;
           bundlePattern.value = first.bundleIdentifierPattern ?? '';
           primaryValue.value = sourcePrimary(first.source);
           selectorValue.value = sourceSelector(first.source);
@@ -159,7 +169,7 @@ export default function AppAutomationManagerScreen() {
     } finally {
       setIsLoading(false);
     }
-  }, [bundleIdentifier, bundlePattern, displayName, isDeveloperMode, primaryValue, selectorValue]);
+  }, [bundleIdentifier, bundlePattern, displayName, isDeveloperMode, primaryValue, selectorValue, sourceBundleIdentifier]);
 
   useEffect(() => {
     void load();
@@ -203,6 +213,7 @@ export default function AppAutomationManagerScreen() {
       ...selected,
       displayName: displayName.value.trim(),
       bundleIdentifier: bundleIdentifier.value.trim(),
+      sourceBundleIdentifier: sourceBundleIdentifier.value.trim(),
       ...(bundlePattern.value.trim()
         ? { bundleIdentifierPattern: bundlePattern.value.trim() }
         : { bundleIdentifierPattern: undefined }),
@@ -213,7 +224,7 @@ export default function AppAutomationManagerScreen() {
       ),
     };
     void queueMutation('update', replacement);
-  }, [bundleIdentifier, bundlePattern, displayName, primaryValue, queueMutation, selected, selectorValue]);
+  }, [bundleIdentifier, bundlePattern, displayName, primaryValue, queueMutation, selected, selectorValue, sourceBundleIdentifier]);
 
   const toggleEnabled = useCallback(() => {
     if (!selected) return;
@@ -255,6 +266,10 @@ export default function AppAutomationManagerScreen() {
     'worklet';
     bundleIdentifier.value = value;
   }, [bundleIdentifier]);
+  const changeSourceBundleIdentifier = useCallback((value: string) => {
+    'worklet';
+    sourceBundleIdentifier.value = value;
+  }, [sourceBundleIdentifier]);
   const changeBundlePattern = useCallback((value: string) => {
     'worklet';
     bundlePattern.value = value;
@@ -339,7 +354,14 @@ export default function AppAutomationManagerScreen() {
                   <TextInput
                     value={bundleIdentifier}
                     onChangeText={changeBundleIdentifier}
-                    placeholder="Bundle identifier"
+                    placeholder="Catalog bundle identifier"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+                  <TextInput
+                    value={sourceBundleIdentifier}
+                    onChangeText={changeSourceBundleIdentifier}
+                    placeholder="Source IPA bundle identifier"
                     autoCapitalize="none"
                     autoCorrect={false}
                   />
@@ -359,6 +381,7 @@ export default function AppAutomationManagerScreen() {
                   />
                   {selected.source.kind === 'github_release' ||
                   selected.source.kind === 'gitlab_release' ||
+                  selected.source.kind === 'forgejo_release' ||
                   selected.source.kind === 'repo_json' ? (
                     <TextInput
                       value={selectorValue}

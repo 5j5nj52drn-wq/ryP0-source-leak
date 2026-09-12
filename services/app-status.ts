@@ -1,6 +1,5 @@
 import { fetch } from 'expo/fetch';
 import type { AppUpdatePolicy, RepoApp, RepoAppStatus } from '../types/repo';
-import { AUTOMATION_REPOSITORY } from './github-api';
 import { getSafeExternalHttpsUrl } from './safe-url';
 
 // The repository workflow refreshes its persisted health snapshot every six
@@ -13,35 +12,10 @@ const DEFAULT_VERIFICATION_CONCURRENCY = 4;
 const MAX_VERIFICATION_CONCURRENCY = 8;
 const VERIFICATION_CACHE_TTL_MS = 10 * 60 * 1000;
 const DOWNLOAD_TIMEOUT_MS = 12_000;
-const WORKFLOW_TIMEOUT_MS = 10_000;
-const GITHUB_API_VERSION = '2026-03-10';
-const WORKFLOW_PATH_PATTERN = /^\.github\/workflows\/[A-Za-z0-9][A-Za-z0-9._+-]{0,119}\.ya?ml$/i;
-const FAILED_WORKFLOW_CONCLUSIONS = new Set([
-  'action_required',
-  'cancelled',
-  'failure',
-  'stale',
-  'startup_failure',
-  'timed_out',
-]);
 
 interface DownloadCheck {
   state: 'available' | 'unavailable' | 'unknown';
   message?: string;
-}
-
-interface WorkflowCheck {
-  state: 'ok' | 'failed' | 'unknown';
-  message?: string;
-}
-
-interface WorkflowRunPayload {
-  status?: unknown;
-  conclusion?: unknown;
-}
-
-interface WorkflowRunsPayload {
-  workflow_runs?: unknown;
 }
 
 interface TimedCacheEntry<T> {
@@ -50,7 +24,6 @@ interface TimedCacheEntry<T> {
 }
 
 const appStatusCache = new Map<string, TimedCacheEntry<RepoAppStatus>>();
-const workflowResultCache = new Map<string, TimedCacheEntry<WorkflowCheck>>();
 
 export interface AppStatusVerification {
   key: string;
@@ -212,113 +185,33 @@ async function checkDownload(downloadURL: string | undefined, signal?: AbortSign
   }
 }
 
-function workflowFilename(workflowPath: string | undefined): string | null {
-  if (!workflowPath || !WORKFLOW_PATH_PATTERN.test(workflowPath)) return null;
-  return workflowPath.split('/').at(-1) ?? null;
-}
-
-async function checkWorkflow(workflowPath: string | undefined, signal?: AbortSignal): Promise<WorkflowCheck> {
-  if (!workflowPath) return { state: 'unknown' };
-
-  const cached = cachedValue(workflowResultCache, workflowPath);
-  if (cached) return cached;
-
-  const filename = workflowFilename(workflowPath);
-  if (!filename) {
-    return { state: 'failed', message: 'The configured daily-update workflow path is invalid.' };
-  }
-
-  const owner = encodeURIComponent(AUTOMATION_REPOSITORY.owner);
-  const repository = encodeURIComponent(AUTOMATION_REPOSITORY.name);
-  const workflow = encodeURIComponent(filename);
-  const url = `https://api.github.com/repos/${owner}/${repository}/actions/workflows/${workflow}/runs?branch=${encodeURIComponent(AUTOMATION_REPOSITORY.branch)}&per_page=1&exclude_pull_requests=true`;
-
-  try {
-    const response = await fetchWithTimeout(
-      url,
-      {
-        method: 'GET',
-        headers: {
-          Accept: 'application/vnd.github+json',
-          'X-GitHub-Api-Version': GITHUB_API_VERSION,
-        },
-        credentials: 'omit',
-      },
-      WORKFLOW_TIMEOUT_MS,
-      signal,
-    );
-
-    if (!response.ok) {
-      await cancelResponseBody(response);
-      const result: WorkflowCheck = { state: 'unknown' };
-      workflowResultCache.set(workflowPath, { value: result, cachedAt: Date.now() });
-      return result;
-    }
-
-    const payload = await response.json() as WorkflowRunsPayload;
-    if (!Array.isArray(payload.workflow_runs) || payload.workflow_runs.length === 0) {
-      const result: WorkflowCheck = { state: 'unknown' };
-      workflowResultCache.set(workflowPath, { value: result, cachedAt: Date.now() });
-      return result;
-    }
-
-    const run = payload.workflow_runs[0] as WorkflowRunPayload;
-    const status = typeof run.status === 'string' ? run.status : '';
-    const conclusion = typeof run.conclusion === 'string' ? run.conclusion : '';
-    if (status === 'completed' && FAILED_WORKFLOW_CONCLUSIONS.has(conclusion)) {
-      const result: WorkflowCheck = {
-        state: 'failed',
-        message: conclusion === 'failure'
-          ? 'The latest daily-update workflow failed.'
-          : `The latest daily-update workflow ended with ${conclusion.replace(/_/g, ' ')}.`,
-      };
-      workflowResultCache.set(workflowPath, { value: result, cachedAt: Date.now() });
-      return result;
-    }
-
-    const result: WorkflowCheck = { state: 'ok' };
-    workflowResultCache.set(workflowPath, { value: result, cachedAt: Date.now() });
-    return result;
-  } catch (error) {
-    if (signal?.aborted || isAbortError(error)) throw error;
-    const result: WorkflowCheck = { state: 'unknown' };
-    workflowResultCache.set(workflowPath, { value: result, cachedAt: Date.now() });
-    return result;
-  }
-}
-
 async function verifyAppStatus(
   app: RepoApp,
   options: Pick<VerifyRepositoryAppStatusesOptions, 'signal'>,
-  workflowChecks: Map<string, Promise<WorkflowCheck>>,
 ): Promise<RepoAppStatus> {
   const cacheKey = getAppStatusKey(app);
   const cached = cachedValue(appStatusCache, cacheKey);
   if (cached) return cached;
 
   const checkedDownloadURL = app.versions[0]?.downloadURL ?? '';
-  const workflowPath = getAppUpdatePolicy(app) === 'daily' ? app.automation?.workflowPath : undefined;
-  let workflowPromise: Promise<WorkflowCheck> = Promise.resolve({ state: 'unknown' });
-
-  if (workflowPath) {
-    workflowPromise = workflowChecks.get(workflowPath) ?? checkWorkflow(workflowPath, options.signal);
-    workflowChecks.set(workflowPath, workflowPromise);
-  }
-
-  const [download, workflow] = await Promise.all([
-    checkDownload(checkedDownloadURL, options.signal),
-    workflowPromise,
-  ]);
+  const persistedPresentation = getAppStatus(app);
+  const currentPersistedStatus = persistedPresentation.checkedAt ? app.status : undefined;
+  const download = await checkDownload(checkedDownloadURL, options.signal);
   const checkedAt = new Date().toISOString();
   let result: RepoAppStatus;
 
-  if (workflow.state === 'failed') {
+  if (download.state === 'unavailable') {
     result = {
-      state: 'update-error',
+      state: 'broken',
       checkedDownloadURL,
       checkedAt,
-      ...(workflow.message ? { message: workflow.message } : {}),
+      ...(download.message ? { message: download.message } : {}),
     };
+  } else if (download.state === 'available' && currentPersistedStatus?.state === 'update-error') {
+    // The private automation repository is intentionally unreadable to end
+    // users. Its six-hour status checker publishes updater failures into
+    // repo.json, so a successful download must not erase a fresh orange state.
+    result = currentPersistedStatus;
   } else if (download.state === 'available') {
     result = {
       state: 'healthy',
@@ -326,13 +219,10 @@ async function verifyAppStatus(
       checkedAt,
       message: 'The latest IPA responded successfully.',
     };
-  } else if (download.state === 'unavailable') {
-    result = {
-      state: 'broken',
-      checkedDownloadURL,
-      checkedAt,
-      ...(download.message ? { message: download.message } : {}),
-    };
+  } else if (currentPersistedStatus) {
+    // A temporary offline/device-network failure is inconclusive. Preserve a
+    // fresh server-side status instead of repainting the card as a new result.
+    result = currentPersistedStatus;
   } else {
     result = {
       state: 'unknown',
@@ -350,13 +240,13 @@ export async function verifyRepositoryAppStatus(
   app: RepoApp,
   options: Pick<VerifyRepositoryAppStatusesOptions, 'signal'> = {},
 ): Promise<RepoAppStatus> {
-  return verifyAppStatus(app, options, new Map<string, Promise<WorkflowCheck>>());
+  return verifyAppStatus(app, options);
 }
 
 /**
  * Verifies apps with a small worker pool and reports each result as it lands.
  * This keeps large repositories responsive and avoids a burst of download-host
- * and GitHub Actions requests.
+ * requests. Workflow health comes from the protected server-side checker.
  */
 export async function verifyRepositoryAppStatuses(
   apps: readonly RepoApp[],
@@ -367,7 +257,6 @@ export async function verifyRepositoryAppStatuses(
     : DEFAULT_VERIFICATION_CONCURRENCY;
   const concurrency = Math.max(1, Math.min(MAX_VERIFICATION_CONCURRENCY, requestedConcurrency));
   const results: Record<string, RepoAppStatus> = Object.create(null);
-  const workflowChecks = new Map<string, Promise<WorkflowCheck>>();
   let nextIndex = 0;
 
   async function worker(): Promise<void> {
@@ -378,7 +267,7 @@ export async function verifyRepositoryAppStatuses(
 
       const app = apps[index];
       try {
-        const status = await verifyAppStatus(app, { signal: options.signal }, workflowChecks);
+        const status = await verifyAppStatus(app, { signal: options.signal });
         if (options.signal?.aborted) return;
         const key = getAppStatusKey(app);
         results[key] = status;

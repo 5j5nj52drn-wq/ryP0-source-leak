@@ -19,6 +19,7 @@ import AppCategoryTabs from '../../../components/app-category-tabs';
 import { RepoApp } from '../../../types/repo';
 import { Inbox } from 'lucide-react-native';
 import { SymbolView } from 'expo-symbols';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ACCENT_COLORS, useAppTheme } from '../../../theme/app-preferences';
 
 const CATEGORIES = [
@@ -46,6 +47,7 @@ export default function HomeScreen() {
     accentColor,
   } = useRepoStore();
   const theme = useAppTheme();
+  const safeAreaInsets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
   const toolbarThemeKey = colorScheme === 'dark' ? 'dark' : 'light';
 
@@ -234,6 +236,13 @@ export default function HomeScreen() {
     </View>
   ), [accentColor, filteredApps.length, handleCategorySelect, selectedCategory, theme.secondaryLabel]);
 
+  // NativeTabs floats above scrolling content. Reserve the visual tab bar and
+  // home-indicator area so the final app card can scroll fully into view.
+  const listContentStyle = useMemo(() => [
+    styles.listContent,
+    { paddingBottom: Math.max(170, safeAreaInsets.bottom + 136) },
+  ], [safeAreaInsets.bottom]);
+
   const ListEmpty = () => {
     if (isLoading && !repo) {
       return (
@@ -287,7 +296,7 @@ export default function HomeScreen() {
           renderItem={renderDraggableItem}
           ListHeaderComponent={categoryTabs}
           ListEmptyComponent={ListEmpty}
-          contentContainerStyle={styles.listContent}
+          contentContainerStyle={listContentStyle}
           showsVerticalScrollIndicator={false}
           contentInsetAdjustmentBehavior="automatic"
           onScroll={scrollHandler}
@@ -301,7 +310,7 @@ export default function HomeScreen() {
           renderItem={renderPlainItem}
           ListHeaderComponent={categoryTabs}
           ListEmptyComponent={ListEmpty}
-          contentContainerStyle={styles.listContent}
+          contentContainerStyle={listContentStyle}
           showsVerticalScrollIndicator={false}
           contentInsetAdjustmentBehavior="automatic"
           onScroll={scrollHandler}
@@ -329,13 +338,13 @@ const styles = StyleSheet.create({
     backgroundColor: '#F2F2F7',
   },
   listContent: {
-    paddingBottom: 110,
+    paddingBottom: 170,
   },
   categoryCount: {
     marginLeft: 16,
     marginTop: -4,
     marginBottom: 10,
-    fontSize: 17,
+    fontSize: 18,
     fontWeight: '800',
     fontVariant: ['tabular-nums'],
   },

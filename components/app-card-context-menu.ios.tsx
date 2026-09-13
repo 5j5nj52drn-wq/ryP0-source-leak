@@ -1,7 +1,8 @@
 import React from 'react';
 import type { ReactElement } from 'react';
 import type { StyleProp, ViewStyle } from 'react-native';
-import { Button, ContextMenu, Host, Menu, RNHostView, Section, ZStack } from '@expo/ui/swift-ui';
+import { Host } from '@expo/ui';
+import { Button, ContextMenu, Menu, RNHostView, Section, ZStack } from '@expo/ui/swift-ui';
 import { contentShape, shapes } from '@expo/ui/swift-ui/modifiers';
 
 export interface AppCardContextMenuAction {
@@ -62,7 +63,7 @@ export default function AppCardContextMenu({
           <ZStack
             modifiers={[
               contentShape(
-                shapes.roundedRectangle({ cornerRadius: 16, roundedCornerStyle: 'continuous' }),
+                shapes.roundedRectangle({ cornerRadius: 22, roundedCornerStyle: 'continuous' }),
                 ['interaction', 'contextMenuPreview'],
               ),
             ]}

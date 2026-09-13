@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   Alert,
   Linking,
-  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -11,14 +10,15 @@ import {
   View,
 } from 'react-native';
 import * as Haptics from 'expo-haptics';
-import { Image } from 'expo-image';
 import { MenuView } from '@expo/ui/community/menu';
 import type { RepoApp, RepoVersion } from '../types/repo';
 import { useRepoStore } from '../store/useRepoStore';
 import { getAppCardTheme } from './app-card-theme';
 import AppCardContextMenu, { type AppCardContextMenuAction } from './app-card-context-menu';
 import { installInLiveContainer } from '../services/livecontainer';
-import AppStatusBadges from './app-status-badges';
+import AppCardVisual from './app-card-visual';
+import { APP_CARD_HEIGHT } from './app-card-visual.types';
+import { getAppStatus, getAppStatusKey, getAppUpdatePolicy } from '../services/app-status';
 import { requireSafeExternalHttpsUrl } from '../services/safe-url';
 
 interface AppCardProps {
@@ -36,66 +36,9 @@ function versionLabel(version: RepoVersion) {
   return version.date ? `${version.version} · ${version.date}` : version.version;
 }
 
-interface CardVisualProps {
-  app: RepoApp;
-  latestVersionLabel: string;
-  subtitle: string;
-  backgroundColor: string;
-  isDeveloperMode: boolean;
-  preview?: boolean;
-  fixedWidth?: number;
-}
-
-function CardVisual({
-  app,
-  latestVersionLabel,
-  subtitle,
-  backgroundColor,
-  isDeveloperMode,
-  preview = false,
-  fixedWidth,
-}: CardVisualProps) {
-  return (
-    <View
-      pointerEvents="none"
-      style={[
-        styles.cardSurface,
-        { backgroundColor },
-        fixedWidth ? { width: fixedWidth } : null,
-        preview && styles.previewSurface,
-      ]}
-    >
-      <View style={styles.cardContent}>
-        {isDeveloperMode ? (
-          <View style={styles.dragPill}>
-            <View style={styles.dragDot} />
-          </View>
-        ) : null}
-
-        <Image source={{ uri: app.iconURL }} style={styles.appIcon} contentFit="cover" transition={120} />
-
-        <View style={styles.infoColumn}>
-          <Text style={styles.appTitle} numberOfLines={1}>{app.name}</Text>
-          <Text style={styles.versionBundle} numberOfLines={1}>
-            {latestVersionLabel} · {app.bundleIdentifier}
-          </Text>
-          <Text style={styles.subtitle} numberOfLines={1}>{subtitle}</Text>
-        </View>
-      </View>
-
-      <View style={styles.statusRow}><AppStatusBadges app={app} /></View>
-
-      {preview ? (
-        <View style={styles.previewInstallButton}>
-          <Text style={styles.installText}>Install</Text>
-        </View>
-      ) : null}
-    </View>
-  );
-}
-
 function AppCardComponent({ app, drag, isActive, onOpen, onEdit, onDelete, onDuplicate, index }: AppCardProps) {
   const isDeveloperMode = useRepoStore((state) => state.isDeveloperMode);
+  const runtimeStatus = useRepoStore((state) => state.runtimeAppStatuses[getAppStatusKey(app)]);
   const { width: viewportWidth } = useWindowDimensions();
   const isOpeningRef = useRef(false);
   const openResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -103,6 +46,8 @@ function AppCardComponent({ app, drag, isActive, onOpen, onEdit, onDelete, onDup
   const latestVersionLabel = latestVersion?.version || 'Unavailable';
   const subtitle = app.subtitle || app.localizedDescription || `${app.name} for iOS`;
   const theme = getAppCardTheme(app, index);
+  const appStatus = getAppStatus(app, runtimeStatus ?? app.status);
+  const typeLabel = getAppUpdatePolicy(app) === 'daily' ? 'Daily Update' : 'Static';
   const cardWidth = Math.max(1, viewportWidth - 32);
 
   const openVersion = useCallback(async (version: RepoVersion) => {
@@ -317,12 +262,15 @@ function AppCardComponent({ app, drag, isActive, onOpen, onEdit, onDelete, onDup
         ]}
       >
         <View style={styles.cardVisualContainer}>
-          <CardVisual
+          <AppCardVisual
             app={app}
             latestVersionLabel={latestVersionLabel}
             subtitle={subtitle}
-            backgroundColor={theme.bg}
-            isDeveloperMode={isDeveloperMode}
+            theme={theme}
+            typeLabel={typeLabel}
+            statusLabel={appStatus.label}
+            statusColor={appStatus.color}
+            statusSymbol={appStatus.symbol}
           />
         </View>
 
@@ -334,12 +282,15 @@ function AppCardComponent({ app, drag, isActive, onOpen, onEdit, onDelete, onDup
           actions={cardMenuActions}
           style={styles.cardContextMenu}
           preview={(
-            <CardVisual
+            <AppCardVisual
               app={app}
               latestVersionLabel={latestVersionLabel}
               subtitle={subtitle}
-              backgroundColor={theme.bg}
-              isDeveloperMode={isDeveloperMode}
+              theme={theme}
+              typeLabel={typeLabel}
+              statusLabel={appStatus.label}
+              statusColor={appStatus.color}
+              statusSymbol={appStatus.symbol}
               preview
               fixedWidth={cardWidth}
             />
@@ -387,32 +338,16 @@ export const AppCard = React.memo(AppCardComponent, (previous, next) => (
 ));
 
 const styles = StyleSheet.create({
-  cardWrapper: { width: '100%', paddingHorizontal: 16, marginBottom: 12 },
+  cardWrapper: { width: '100%', paddingHorizontal: 16, marginBottom: 14 },
   cardContainer: {
-    position: 'relative', width: '100%', height: 116, borderRadius: 16,
+    position: 'relative', width: '100%', height: APP_CARD_HEIGHT, borderRadius: 22,
   },
-  cardVisualContainer: { width: '100%', height: 116, borderRadius: 16 },
-  cardSurface: {
-    position: 'relative', width: '100%', height: 116, borderRadius: 16, overflow: 'hidden',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.15,
-    shadowRadius: 10, elevation: 4,
-  },
-  previewSurface: { shadowOpacity: 0.22, shadowRadius: 16, elevation: 8 },
+  cardVisualContainer: { width: '100%', height: APP_CARD_HEIGHT, borderRadius: 22 },
   cardContextMenu: { ...StyleSheet.absoluteFill, zIndex: 1 },
-  cardTapTarget: { width: '100%', height: 116, borderRadius: 16 },
-  statusRow: { paddingHorizontal: 12, height: 24 },
-  cardContent: { width: '100%', flexDirection: 'row', alignItems: 'center', height: 88, padding: 12, overflow: 'hidden' },
-  activeCard: { transform: [{ scale: 1.03 }], zIndex: 999 },
-  dragPill: { paddingVertical: 8, paddingRight: 6, justifyContent: 'center', alignItems: 'center' },
-  dragDot: { width: 5, height: 9, borderRadius: 4.5, backgroundColor: '#D9D9D9' },
-  appIcon: { width: 56, height: 56, borderRadius: 12, marginRight: 12, flexShrink: 0, backgroundColor: 'rgba(255, 255, 255, 0.1)' },
-  infoColumn: { flex: 1, minWidth: 0, flexShrink: 1, justifyContent: 'center', paddingRight: 94, overflow: 'hidden' },
-  appTitle: { color: '#FFFFFF', fontFamily: Platform.OS === 'ios' ? 'Inter' : 'System', fontSize: 16, fontWeight: '700', lineHeight: 22, flexShrink: 1 },
-  versionBundle: { color: 'rgba(255, 255, 255, 0.65)', fontFamily: Platform.OS === 'ios' ? 'Inter' : 'System', fontSize: 12, fontWeight: '400', lineHeight: 16, marginTop: 1, flexShrink: 1 },
-  subtitle: { color: 'rgba(255, 255, 255, 0.65)', fontFamily: Platform.OS === 'ios' ? 'Inter' : 'System', fontSize: 12, fontWeight: '400', lineHeight: 16, marginTop: 1, flexShrink: 1 },
+  cardTapTarget: { width: '100%', height: APP_CARD_HEIGHT, borderRadius: 22 },
+  activeCard: { opacity: 0.96 },
   dragTarget: { position: 'absolute', zIndex: 2, left: 12, top: 12, bottom: 12, width: 16 },
-  installMenu: { position: 'absolute', zIndex: 2, right: 12, top: 26 },
-  installButton: { paddingVertical: 8, paddingHorizontal: 16, borderRadius: 100, justifyContent: 'center', alignItems: 'center' },
-  previewInstallButton: { position: 'absolute', right: 12, top: 26, paddingVertical: 8, paddingHorizontal: 16, borderRadius: 100, backgroundColor: 'rgba(255, 255, 255, 0.28)' },
-  installText: { color: '#FFFFFF', fontFamily: Platform.OS === 'ios' ? 'Inter' : 'System', fontSize: 14, fontWeight: '600' },
+  installMenu: { position: 'absolute', zIndex: 3, right: 16, top: 17 },
+  installButton: { paddingVertical: 9, paddingHorizontal: 15, borderRadius: 100, justifyContent: 'center', alignItems: 'center', minWidth: 74 },
+  installText: { color: '#1C1C1E', fontSize: 14, fontWeight: '700' },
 });

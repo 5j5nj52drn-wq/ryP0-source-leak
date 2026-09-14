@@ -6,6 +6,7 @@ import { useRepoStore } from '../store/useRepoStore';
 import type { RepoApp, RepoVersion } from '../types/repo';
 import { installInLiveContainer } from '../services/livecontainer';
 import { getAppStatus, getAppStatusKey, getAppUpdatePolicy } from '../services/app-status';
+import { getAppGitHubProjectUrl } from '../services/app-project';
 import { requireSafeExternalHttpsUrl } from '../services/safe-url';
 
 interface AppDetailsProps {
@@ -27,6 +28,7 @@ export default function AppDetails({ app }: AppDetailsProps) {
   const runtimeStatus = useRepoStore((state) => state.runtimeAppStatuses[getAppStatusKey(app)]);
   const latestVersion = app.versions[0];
   const appStatus = getAppStatus(app, runtimeStatus ?? app.status);
+  const githubProjectUrl = getAppGitHubProjectUrl(app);
 
   const handleInstall = async () => {
     try {
@@ -50,6 +52,15 @@ export default function AppDetails({ app }: AppDetailsProps) {
       await installInLiveContainer(latestVersion);
     } catch (error: any) {
       Alert.alert('LiveContainer', error?.message || 'Unable to hand this IPA to LiveContainer.');
+    }
+  };
+
+  const handleOpenGitHub = async () => {
+    if (!githubProjectUrl) return;
+    try {
+      await Linking.openURL(requireSafeExternalHttpsUrl(githubProjectUrl, 'GitHub project link'));
+    } catch (error: any) {
+      Alert.alert('GitHub', error?.message || 'Unable to open this app’s GitHub page.');
     }
   };
 
@@ -100,6 +111,7 @@ export default function AppDetails({ app }: AppDetailsProps) {
             <FieldGroup.Section>
               <Button onPress={handleInstall}><Text>Install Latest Version</Text></Button>
               {latestVersion ? <Button onPress={() => void handleInstallInLiveContainer()}><Text>Install in LiveContainer</Text></Button> : null}
+              {githubProjectUrl ? <Button onPress={() => void handleOpenGitHub()}><Text>View on GitHub</Text></Button> : null}
               {isDeveloperMode ? (
                 <Button onPress={() => router.push({ pathname: '/edit', params: { bundleIdentifier: app.bundleIdentifier } })} variant="text">
                   <Text>Edit App</Text>

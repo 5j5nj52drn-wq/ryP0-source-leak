@@ -1,6 +1,6 @@
 import { fetch } from 'expo/fetch';
 import { RepoData } from '../types/repo';
-import { getSafeExternalHttpsUrl, isSafeExternalHttpsUrl } from './safe-url';
+import { getSafeExternalHttpsUrl, getSafeGitHubRepositoryUrl, isSafeExternalHttpsUrl } from './safe-url';
 
 /** Public catalog data. This repository intentionally contains no source or secrets. */
 export const CONTENT_REPOSITORY = {
@@ -201,6 +201,31 @@ function assertValidRepositoryData(value: unknown): asserts value is RepoData {
       if (app.automation.sourceURL !== undefined && !isSafeExternalHttpsUrl(app.automation.sourceURL)) {
         throw new GitHubApiError(
           `repo.json contains an unsafe automation source URL for ${app.name}.`,
+          0,
+          'INVALID_RESPONSE',
+        );
+      }
+    }
+
+    if (app.githubURL !== undefined && !getSafeGitHubRepositoryUrl(app.githubURL)) {
+      throw new GitHubApiError(
+        `repo.json contains an invalid GitHub project URL for ${app.name}.`,
+        0,
+        'INVALID_RESPONSE',
+      );
+    }
+
+    if (app.importSource !== undefined) {
+      if (!isRecord(app.importSource)) {
+        throw new GitHubApiError(
+          `repo.json contains invalid import metadata for ${app.name}.`,
+          0,
+          'INVALID_RESPONSE',
+        );
+      }
+      if (app.importSource.sourceURL !== undefined && !isSafeExternalHttpsUrl(app.importSource.sourceURL)) {
+        throw new GitHubApiError(
+          `repo.json contains an unsafe import source URL for ${app.name}.`,
           0,
           'INVALID_RESPONSE',
         );

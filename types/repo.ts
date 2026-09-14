@@ -24,6 +24,11 @@ export interface RepoAppAutomation {
   configId?: string;
 }
 
+export interface RepoAppImportSource {
+  method?: string;
+  sourceURL?: string;
+}
+
 export interface RepoAppStatus {
   state: 'healthy' | 'broken' | 'update-error' | 'unknown';
   checkedDownloadURL?: string;
@@ -41,7 +46,10 @@ export interface RepoApp {
   tintColor?: string;
   category?: string;
   updatePolicy?: AppUpdatePolicy;
+  /** Explicit upstream GitHub project, when an app has one. */
+  githubURL?: string;
   automation?: RepoAppAutomation;
+  importSource?: RepoAppImportSource;
   status?: RepoAppStatus;
   versions: RepoVersion[];
   appPermissions?: RepoAppPermissions;

@@ -9,6 +9,8 @@
  */
 export const MAX_EXTERNAL_HTTPS_URL_LENGTH = 8_192;
 
+const GITHUB_REPOSITORY_SEGMENT_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+
 function isPrivateIpv4(hostname: string): boolean {
   const parts = hostname.split('.');
   if (parts.length !== 4 || parts.some((part) => !/^\d{1,3}$/.test(part))) return false;
@@ -76,6 +78,55 @@ export function getSafeExternalHttpsUrl(value: unknown): string | null {
 
 export function isSafeExternalHttpsUrl(value: unknown): value is string {
   return getSafeExternalHttpsUrl(value) !== null;
+}
+
+/**
+ * Resolves a public GitHub repository reference to its project home page.
+ *
+ * A catalog may reference a release, an Actions artifact, or a nightly.link
+ * archive. Those are useful updater sources, but the details screen should
+ * always open the project's GitHub page rather than an IPA or internal
+ * automation repository.
+ */
+export function getSafeGitHubRepositoryUrl(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > MAX_EXTERNAL_HTTPS_URL_LENGTH) return null;
+
+  const toRepositoryUrl = (owner: string | undefined, repository: string | undefined): string | null => {
+    const normalizedRepository = repository?.replace(/\.git$/i, '') ?? '';
+    if (!owner || !GITHUB_REPOSITORY_SEGMENT_PATTERN.test(owner)) return null;
+    if (!GITHUB_REPOSITORY_SEGMENT_PATTERN.test(normalizedRepository)) return null;
+    return `https://github.com/${owner}/${normalizedRepository}`;
+  };
+
+  // Allow deliberately stored owner/repository metadata without treating an
+  // arbitrary non-URL string as a link.
+  if (!trimmed.includes('://')) {
+    const parts = trimmed.replace(/^\/+|\/+$/g, '').split('/');
+    return parts.length === 2 ? toRepositoryUrl(parts[0], parts[1]) : null;
+  }
+
+  const normalized = getSafeExternalHttpsUrl(trimmed);
+  if (!normalized) return null;
+
+  const url = new URL(normalized);
+  const hostname = url.hostname.toLowerCase().replace(/\.$/, '');
+  const parts = url.pathname.split('/').filter(Boolean);
+
+  if (hostname === 'github.com' || hostname === 'www.github.com') {
+    return toRepositoryUrl(parts[0], parts[1]);
+  }
+
+  // nightly.link mirrors GitHub Actions artifacts using
+  // /owner/repository/workflows/... paths. It is the only non-GitHub host we
+  // can safely translate without guessing an app's upstream project.
+  if (hostname === 'nightly.link') {
+    return toRepositoryUrl(parts[0], parts[1]);
+  }
+
+  return null;
 }
 
 export function requireSafeExternalHttpsUrl(value: unknown, label = 'URL'): string {

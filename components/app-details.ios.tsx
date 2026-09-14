@@ -41,6 +41,7 @@ import { useRepoStore } from '../store/useRepoStore';
 import type { RepoApp, RepoVersion } from '../types/repo';
 import { installInLiveContainer } from '../services/livecontainer';
 import { getAppStatus, getAppStatusKey, getAppUpdatePolicy } from '../services/app-status';
+import { getAppGitHubProjectUrl } from '../services/app-project';
 import { requireSafeExternalHttpsUrl } from '../services/safe-url';
 
 const SECONDARY = { type: 'hierarchical', style: 'secondary' } as const;
@@ -99,6 +100,7 @@ export default function AppDetails({ app }: AppDetailsProps) {
   const latestVersion = app.versions[0];
   const appStatus = getAppStatus(app, runtimeStatus ?? app.status);
   const appDescription = app.localizedDescription || app.subtitle || 'No description has been provided for this app.';
+  const githubProjectUrl = getAppGitHubProjectUrl(app);
 
   const handleInstall = async () => {
     try {
@@ -124,6 +126,16 @@ export default function AppDetails({ app }: AppDetailsProps) {
       await installInLiveContainer(version);
     } catch (error: any) {
       Alert.alert('LiveContainer', error?.message || 'Unable to hand this IPA to LiveContainer.');
+    }
+  };
+
+  const handleOpenGitHub = async () => {
+    if (!githubProjectUrl) return;
+    try {
+      await Haptics.selectionAsync();
+      await Linking.openURL(requireSafeExternalHttpsUrl(githubProjectUrl, 'GitHub project link'));
+    } catch (error: any) {
+      Alert.alert('GitHub', error?.message || 'Unable to open this app’s GitHub page.');
     }
   };
 
@@ -238,6 +250,14 @@ export default function AppDetails({ app }: AppDetailsProps) {
                 onPress={() => void handleInstallInLiveContainer(latestVersion)}
                 modifiers={[buttonStyle('bordered')]}
               />
+              {githubProjectUrl ? (
+                <Button
+                  label="View on GitHub"
+                  systemImage="arrow.up.right.square"
+                  onPress={() => void handleOpenGitHub()}
+                  modifiers={[buttonStyle('bordered')]}
+                />
+              ) : null}
               <Text modifiers={[font({ size: 13 }), foregroundStyle(SECONDARY)]}>
                 {`Version ${latestVersion.version} · Released ${formatReleaseDate(latestVersion.date)}`}
               </Text>

@@ -62,8 +62,8 @@ prerelease in the same repository with the IPA/checksum. Pushes and pull request
 never publish a release. Review and publish a draft yourself if desired; there
 is no implicit upload to another public releases repository. GitHub creates
 source archives when a repository release is published, so use the separate
-public `Sami-Wali/ryP0` releases repository when distributing binaries from the
-private source repository.
+public `Sami-Wali/ryP0-repository` repository when distributing binaries from
+the private source repository.
 
 ## Run locally on a Mac
 

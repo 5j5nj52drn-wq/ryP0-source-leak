@@ -24,11 +24,19 @@ import { queuePrivateImport } from '../../../services/private-imports';
 import { ACCENT_COLORS, useAppTheme } from '../../../theme/app-preferences';
 import AppCategoryTabs from '../../../components/app-category-tabs';
 import AppRequestForm from '../../../components/app-request-form';
+import GitHubActionsCommitPicker from '../../../components/github-actions-commit-picker';
+import GitHubReleaseChannelPicker from '../../../components/github-release-channel-picker';
 import IpaUploader from '../../../components/ipa-uploader';
 import RepositoryImportReview, {
   type StagedRepositoryApp,
 } from '../../../components/repository-import-review';
 import type { IpaUploadResult } from '../../../services/ipa-upload';
+import {
+  isGitHubRepositoryReference,
+  listGitHubActionBuildCommits,
+  type GitHubActionBuildCommit,
+} from '../../../services/github-action-builds';
+import type { GitHubReleaseChannel } from '../../../types/github-release-channel';
 
 const WORKSPACE_TABS = [
   { id: 'add', label: 'Add Apps' },
@@ -178,6 +186,12 @@ export default function AddAppTabScreen() {
   const [githubDescription, setGithubDescription] = useState('');
   const [githubIconUrl, setGithubIconUrl] = useState('');
   const [githubCategory, setGithubCategory] = useState('Sideloading');
+  const [githubReleaseChannel, setGithubReleaseChannel] = useState<GitHubReleaseChannel>('release');
+  const [githubReleaseTag, setGithubReleaseTag] = useState('');
+  const [githubActionsCommit, setGithubActionsCommit] = useState('');
+  const [githubActionBuildCommits, setGithubActionBuildCommits] = useState<GitHubActionBuildCommit[]>([]);
+  const [isLoadingGithubActions, setIsLoadingGithubActions] = useState(false);
+  const [githubActionsLoadError, setGithubActionsLoadError] = useState('');
 
   const [repoUrl, setRepoUrl] = useState('');
   const [stagedApps, setStagedApps] = useState<StagedRepositoryApp[]>([]);
@@ -208,6 +222,42 @@ export default function AddAppTabScreen() {
     setPendingIconSelection(null);
     setIconTarget(null);
   }, [iconTarget, pendingIconSelection, setPendingIconSelection]);
+
+  useEffect(() => {
+    const repository = githubRepository.trim();
+    if (githubReleaseChannel !== 'actions' || !isGitHubRepositoryReference(repository)) {
+      setGithubActionBuildCommits([]);
+      setGithubActionsLoadError('');
+      setIsLoadingGithubActions(false);
+      return;
+    }
+
+    let isCurrent = true;
+    const timer = setTimeout(() => {
+      setIsLoadingGithubActions(true);
+      setGithubActionsLoadError('');
+      void listGitHubActionBuildCommits(repository)
+        .then((commits) => {
+          if (!isCurrent) return;
+          setGithubActionBuildCommits(commits);
+          setGithubActionsCommit((current) => (current && !commits.some((commit) => commit.sha === current) ? '' : current));
+        })
+        .catch((error: unknown) => {
+          if (!isCurrent) return;
+          setGithubActionBuildCommits([]);
+          setGithubActionsCommit('');
+          setGithubActionsLoadError(error instanceof Error ? error.message : 'Could not load successful Actions builds.');
+        })
+        .finally(() => {
+          if (isCurrent) setIsLoadingGithubActions(false);
+        });
+    }, 350);
+
+    return () => {
+      isCurrent = false;
+      clearTimeout(timer);
+    };
+  }, [githubReleaseChannel, githubRepository]);
 
   const openIconGallery = useCallback((target: IconTarget) => {
     setIconTarget(target);
@@ -280,6 +330,10 @@ export default function AddAppTabScreen() {
   const handleAddGithub = useCallback(async () => {
     setIsSaving(true);
     try {
+      if (githubReleaseChannel === 'tag' && !githubReleaseTag.trim()) {
+        Alert.alert('Release Tag Required', 'Enter the exact GitHub tag you want to import.');
+        return;
+      }
       await queuePrivateImport({
         method: 'github',
         sourceUrl: githubRepository,
@@ -287,18 +341,24 @@ export default function AddAppTabScreen() {
         description: githubDescription || undefined,
         iconUrl: githubIconUrl || undefined,
         category: githubCategory,
+        githubReleaseChannel,
+        githubReleaseTag: githubReleaseChannel === 'tag' ? githubReleaseTag : undefined,
+        githubActionsCommit: githubReleaseChannel === 'actions' ? githubActionsCommit : undefined,
       });
       setGithubRepository('');
       setGithubName('');
       setGithubDescription('');
       setGithubIconUrl('');
-      Alert.alert('GitHub Import Queued', 'The private importer will prefer repo.json, then releases and Actions artifacts, validate the IPA, and publish only verified metadata.');
+      setGithubReleaseChannel('release');
+      setGithubReleaseTag('');
+      setGithubActionsCommit('');
+      Alert.alert('GitHub Import Queued', 'The private importer will validate the selected GitHub source, inspect its IPA, and publish only verified metadata.');
     } catch (error: any) {
       Alert.alert('GitHub Import Failed', error?.message || 'Could not queue this GitHub source for validation.');
     } finally {
       setIsSaving(false);
     }
-  }, [githubCategory, githubDescription, githubIconUrl, githubName, githubRepository]);
+  }, [githubActionsCommit, githubCategory, githubDescription, githubIconUrl, githubName, githubReleaseChannel, githubReleaseTag, githubRepository]);
 
   const handleExtractRepository = useCallback(async () => {
     setIsSaving(true);
@@ -527,8 +587,32 @@ export default function AddAppTabScreen() {
             ) : null}
 
             {importMethod === 'github' ? (
-              <SectionCard title="GitHub App Finder" detail="Checks repo.json first, then stable, beta, nightly, alpha, and Actions builds. It prefers the app’s real icon over the developer profile image." theme={theme}>
+              <SectionCard title="GitHub App Finder" detail="Choose the exact source: stable Release, Nightly, Alpha, a specific Tag, or the newest successful Actions build. The importer uses app metadata when available and never uses a developer profile photo as the app icon." theme={theme}>
                 <FormField theme={theme} label="GitHub Repository" placeholder="owner/repository or https://github.com/owner/repository" value={githubRepository} onChangeText={setGithubRepository} autoCapitalize="none" />
+                <GitHubReleaseChannelPicker
+                  accentColor={accent}
+                  disabled={isSaving}
+                  value={githubReleaseChannel}
+                  onChange={setGithubReleaseChannel}
+                />
+                {githubReleaseChannel === 'tag' ? (
+                  <FormField theme={theme} label="Release Tag" placeholder="v1.2.3" value={githubReleaseTag} onChangeText={setGithubReleaseTag} autoCapitalize="none" />
+                ) : null}
+                {githubReleaseChannel === 'actions' ? (
+                  <>
+                    <GitHubActionsCommitPicker
+                      accentColor={accent}
+                      commits={githubActionBuildCommits}
+                      disabled={isSaving || !isGitHubRepositoryReference(githubRepository)}
+                      isLoading={isLoadingGithubActions}
+                      onChange={setGithubActionsCommit}
+                      value={githubActionsCommit}
+                    />
+                    {githubActionsLoadError ? (
+                      <Text selectable style={[styles.actionsLoadError, { color: theme.secondaryLabel }]}>{githubActionsLoadError}</Text>
+                    ) : null}
+                  </>
+                ) : null}
                 <FormField theme={theme} label="Rename App (Optional)" placeholder="Keep the repository name" value={githubName} onChangeText={setGithubName} />
                 <FormField theme={theme} label="Description (Optional)" placeholder="Use the release or repository description" value={githubDescription} onChangeText={setGithubDescription} multiline />
                 <FormField theme={theme} label="Icon URL (Optional)" placeholder="Automatically detected when empty" value={githubIconUrl} onChangeText={setGithubIconUrl} autoCapitalize="none" keyboardType="url" />
@@ -631,6 +715,7 @@ const styles = StyleSheet.create({
   inputLabel: { marginBottom: 6, fontSize: 13, fontWeight: '600' },
   input: { minHeight: 44, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 12, borderWidth: StyleSheet.hairlineWidth, fontSize: 15 },
   multilineInput: { minHeight: 78, textAlignVertical: 'top' },
+  actionsLoadError: { fontSize: 13, lineHeight: 18, marginTop: -8, marginBottom: 14 },
   iconPickerRow: { alignItems: 'center', flexDirection: 'row', gap: 12, marginBottom: 16 },
   iconPreview: { width: 48, height: 48, borderRadius: 11, borderCurve: 'continuous', backgroundColor: 'rgba(120, 120, 128, 0.16)' },
   iconPlaceholder: { width: 48, height: 48, alignItems: 'center', justifyContent: 'center', borderRadius: 11, borderWidth: StyleSheet.hairlineWidth, borderCurve: 'continuous' },

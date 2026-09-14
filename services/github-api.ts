@@ -11,10 +11,10 @@ export const CONTENT_REPOSITORY = {
   iconsPath: 'icons',
 } as const;
 
-/** Public IPA assets. Keeping releases separate prevents source archives leaking. */
+/** Public IPA assets and repo.json. This repository contains no source archives. */
 export const RELEASES_REPOSITORY = {
   owner: 'Sami-Wali',
-  name: 'ryP0',
+  name: 'ryP0-repository',
   branch: 'main',
 } as const;
 

@@ -8,6 +8,7 @@ import {
   Form,
   HStack,
   Image,
+  Label,
   LabeledContent,
   Section,
   Spacer,
@@ -24,6 +25,7 @@ import {
   foregroundStyle,
   frame,
   lineLimit,
+  labelStyle,
   listRowBackground,
   listRowSeparator,
   listSectionSpacing,
@@ -221,11 +223,15 @@ export default function AppDetails({ app }: AppDetailsProps) {
           {latestVersion ? (
             <Section modifiers={[listRowBackground(Color.ios.secondarySystemGroupedBackground)]}>
               <Button
-                label="Install Latest Version"
-                systemImage="arrow.down.circle.fill"
                 onPress={handleInstall}
                 modifiers={[buttonStyle('borderedProminent'), tint(Color.ios.systemBlue)]}
-              />
+              >
+                <Label
+                  title="Install Latest Version"
+                  systemImage="arrow.down.circle.fill"
+                  modifiers={[labelStyle('titleAndIcon')]}
+                />
+              </Button>
               <Button
                 label="Install in LiveContainer"
                 systemImage="shippingbox.fill"

@@ -1,5 +1,10 @@
 import { dispatchGitHubWorkflow, listGitHubWorkflows } from './github-workflows';
 import { getSafeExternalHttpsUrl } from './safe-url';
+import {
+  GITHUB_RELEASE_CHANNELS,
+  isGitHubReleaseChannel,
+  type GitHubReleaseChannel,
+} from '../types/github-release-channel';
 
 /** The only manual-admin importer in the private automation repository. */
 const IMPORT_WORKFLOW_PATH = '.github/workflows/import-app.yml';
@@ -31,6 +36,12 @@ export interface PrivateImportInput {
   uploadArtifactName?: string;
   /** Exact repo.json app selector; never a fuzzy display-name match. */
   selector?: string;
+  /** The exact GitHub source channel to inspect for a GitHub import. */
+  githubReleaseChannel?: GitHubReleaseChannel;
+  /** Required only when githubReleaseChannel is `tag`. */
+  githubReleaseTag?: string;
+  /** Optional SHA/prefix that scopes a GitHub Actions import to one commit. */
+  githubActionsCommit?: string;
   archiveToR2?: boolean;
 }
 
@@ -102,6 +113,9 @@ export async function queuePrivateImport(input: PrivateImportInput): Promise<{ w
   const uploadReleaseTag = clean(input.uploadReleaseTag, 120);
   const uploadRunId = clean(input.uploadRunId, 20);
   const uploadArtifactName = clean(input.uploadArtifactName, 160);
+  const githubReleaseChannel = clean(input.githubReleaseChannel, 24).toLowerCase() || 'release';
+  const githubReleaseTag = clean(input.githubReleaseTag, 128);
+  const githubActionsCommit = clean(input.githubActionsCommit, 40).toLowerCase();
 
   if (!category) throw new PrivateImportError('Choose a category.');
   if ((method === 'direct-url' || method === 'telegram-r2') && !appName) {
@@ -130,6 +144,26 @@ export async function queuePrivateImport(input: PrivateImportInput): Promise<{ w
       throw new PrivateImportError('The trusted Actions run identifier is invalid.');
     }
   }
+  if (method === 'github') {
+    if (!isGitHubReleaseChannel(githubReleaseChannel)) {
+      throw new PrivateImportError(`Choose a GitHub source: ${GITHUB_RELEASE_CHANNELS.join(', ')}.`);
+    }
+    if (githubReleaseChannel === 'tag' && !githubReleaseTag) {
+      throw new PrivateImportError('Enter the exact GitHub release tag to import.');
+    }
+    if (githubReleaseChannel !== 'tag' && githubReleaseTag) {
+      throw new PrivateImportError('A GitHub release tag can only be used with the Tag source.');
+    }
+    if (githubReleaseTag && !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(githubReleaseTag)) {
+      throw new PrivateImportError('The GitHub release tag contains unsupported characters.');
+    }
+    if (githubReleaseChannel !== 'actions' && githubActionsCommit) {
+      throw new PrivateImportError('An Actions commit can only be used with Latest Actions Build.');
+    }
+    if (githubActionsCommit && !/^[0-9a-f]{7,40}$/.test(githubActionsCommit)) {
+      throw new PrivateImportError('Enter a Git commit SHA (at least 7 hexadecimal characters).');
+    }
+  }
 
   const workflows = await listGitHubWorkflows();
   const workflow = workflows.find((candidate) => candidate.path === IMPORT_WORKFLOW_PATH);
@@ -155,6 +189,11 @@ export async function queuePrivateImport(input: PrivateImportInput): Promise<{ w
   if (uploadRunId) inputs.upload_run_id = uploadRunId;
   if (uploadArtifactName) inputs.upload_artifact_name = uploadArtifactName;
   if (selector) inputs.selector = selector;
+  if (method === 'github') {
+    inputs.github_release_channel = githubReleaseChannel;
+    if (githubReleaseTag) inputs.github_release_tag = githubReleaseTag;
+    if (githubActionsCommit) inputs.github_actions_commit = githubActionsCommit;
+  }
   if (method === 'telegram-r2' && input.archiveToR2) inputs.archive_to_r2 = 'true';
 
   await dispatchGitHubWorkflow(workflow.id, inputs);

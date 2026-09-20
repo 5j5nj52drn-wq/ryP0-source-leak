@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Alert,
+  Linking,
   ScrollView,
   StyleSheet,
   Text,
@@ -355,7 +356,7 @@ export default function AddAppTabScreen() {
         Alert.alert('Release Tag Required', 'Enter the exact GitHub tag you want to import.');
         return;
       }
-      await queuePrivateImport({
+      const importDispatch = await queuePrivateImport({
         method: 'github',
         sourceUrl: githubRepository,
         appName: githubName || undefined,
@@ -380,10 +381,23 @@ export default function AddAppTabScreen() {
       setGithubReleaseTag('');
       setGithubActionsCommit('');
       Alert.alert(
-        'GitHub Import Queued',
+        'GitHub Import Started',
         githubReleaseChannel === 'actions'
-          ? 'Actions artifacts expire, so the importer will keep a verified mirror copy. Other GitHub sources use their original link unless you chose a mirror.'
-          : 'The importer will use the selected GitHub source and keep its original link unless you explicitly chose a mirror copy.',
+          ? 'GitHub accepted the request and is validating the Actions artifact in the background. It has not been added to the catalog yet. Actions artifacts expire, so a verified mirror will be kept if validation succeeds.'
+          : 'GitHub accepted the request and is validating the selected source in the background. It has not been added to the catalog yet. The original link will be kept unless you chose a mirror.',
+        importDispatch.workflowUrl
+          ? [
+              {
+                text: 'View Import Status',
+                onPress: () => {
+                  void Linking.openURL(importDispatch.workflowUrl!).catch(() => {
+                    Alert.alert('Could Not Open Import Status', 'Open GitHub Actions in your browser to check this import.');
+                  });
+                },
+              },
+              { text: 'OK', style: 'cancel' },
+            ]
+          : undefined,
       );
     } catch (error: any) {
       Alert.alert('GitHub Import Failed', error?.message || 'Could not queue this GitHub source for validation.');

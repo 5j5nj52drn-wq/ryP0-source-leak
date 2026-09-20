@@ -1,10 +1,8 @@
 name: Xcode - Build ryP0 IPA
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+  # IPA builds cost macOS runner minutes. Keep this manual so only the
+  # repository owner starts a build intentionally from the Actions page.
   workflow_dispatch:
     inputs:
       create_draft_release:

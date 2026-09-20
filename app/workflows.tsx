@@ -17,6 +17,8 @@ function sourceLabel(source: AppAutomationSource): string {
   switch (source.kind) {
     case 'github_release':
       return 'GitHub Releases';
+    case 'github_actions':
+      return 'GitHub Actions';
     case 'archive':
       return 'GitHub Actions Archive';
     case 'gitlab_release':
@@ -33,6 +35,7 @@ function sourceLabel(source: AppAutomationSource): string {
 function sourcePrimary(source: AppAutomationSource): string {
   switch (source.kind) {
     case 'github_release':
+    case 'github_actions':
       return source.repository;
     case 'archive':
     case 'repo_json':
@@ -50,8 +53,10 @@ function sourceSelector(source: AppAutomationSource): string {
     case 'gitlab_release':
     case 'forgejo_release':
       return source.assetPattern;
+    case 'github_actions':
+      return source.artifactPattern;
     case 'repo_json':
-      return source.appNamePattern;
+      return source.bundleIdentifier ?? source.appNamePattern ?? '';
     case 'archive':
     case 'telegram':
       return '';
@@ -59,7 +64,7 @@ function sourceSelector(source: AppAutomationSource): string {
 }
 
 function primaryPlaceholder(source: AppAutomationSource): string {
-  return source.kind === 'github_release'
+  return source.kind === 'github_release' || source.kind === 'github_actions'
     ? 'owner/repository'
     : source.kind === 'gitlab_release'
       ? 'GitLab releases API URL'
@@ -73,7 +78,13 @@ function primaryPlaceholder(source: AppAutomationSource): string {
 }
 
 function selectorPlaceholder(source: AppAutomationSource): string {
-  return source.kind === 'repo_json' ? 'Exact app-name pattern' : 'IPA asset pattern';
+  return source.kind === 'repo_json'
+    ? source.bundleIdentifier
+      ? 'Exact source bundle identifier'
+      : 'Exact app-name pattern'
+    : source.kind === 'github_actions'
+      ? 'IPA artifact pattern'
+      : 'IPA asset pattern';
 }
 
 function replaceSourceValues(
@@ -84,13 +95,17 @@ function replaceSourceValues(
   switch (source.kind) {
     case 'github_release':
       return { ...source, repository: primary, assetPattern: selector };
+    case 'github_actions':
+      return { ...source, repository: primary, artifactPattern: selector };
     case 'archive':
       return { ...source, url: primary };
     case 'gitlab_release':
     case 'forgejo_release':
       return { ...source, apiURL: primary, assetPattern: selector };
     case 'repo_json':
-      return { ...source, url: primary, appNamePattern: selector };
+      return source.bundleIdentifier
+        ? { ...source, url: primary, bundleIdentifier: selector }
+        : { ...source, url: primary, appNamePattern: selector };
     case 'telegram':
       return { ...source, url: primary };
   }

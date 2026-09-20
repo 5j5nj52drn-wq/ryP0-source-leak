@@ -4,6 +4,8 @@ export interface RepoVersion {
   date: string;
   downloadURL: string;
   size: number;
+  /** SHA-256 of the IPA when supplied by the catalog updater. */
+  sha256?: string;
   localizedDescription?: string;
   minOSVersion?: string;
 }

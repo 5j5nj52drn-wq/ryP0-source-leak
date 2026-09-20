@@ -26,6 +26,10 @@ import AppCategoryTabs from '../../../components/app-category-tabs';
 import AppRequestForm from '../../../components/app-request-form';
 import GitHubActionsCommitPicker from '../../../components/github-actions-commit-picker';
 import GitHubReleaseChannelPicker from '../../../components/github-release-channel-picker';
+import ImportDeliveryPicker from '../../../components/import-delivery-picker';
+import ImportUpdatePolicyPicker, {
+  ImportHistoryLimitPicker,
+} from '../../../components/import-update-policy-picker';
 import IpaUploader from '../../../components/ipa-uploader';
 import RepositoryImportReview, {
   type StagedRepositoryApp,
@@ -36,7 +40,9 @@ import {
   listGitHubActionBuildCommits,
   type GitHubActionBuildCommit,
 } from '../../../services/github-action-builds';
+import type { ImportDeliveryMode, ImportHistoryLimit } from '../../../types/import-options';
 import type { GitHubReleaseChannel } from '../../../types/github-release-channel';
+import type { AppUpdatePolicy } from '../../../types/repo';
 
 const WORKSPACE_TABS = [
   { id: 'add', label: 'Add Apps' },
@@ -175,6 +181,8 @@ export default function AddAppTabScreen() {
   const [directDescription, setDirectDescription] = useState('');
   const [directIconUrl, setDirectIconUrl] = useState('');
   const [directCategory, setDirectCategory] = useState('Sideloading');
+  const [directDeliveryMode, setDirectDeliveryMode] = useState<ImportDeliveryMode>('direct-source');
+  const [directHistoryLimit, setDirectHistoryLimit] = useState<ImportHistoryLimit>(3);
   const [directUploaderGeneration, setDirectUploaderGeneration] = useState(0);
   // A file selected on the device is first placed in the private source
   // repository.  Keep its opaque staging reference separate from a public
@@ -186,6 +194,9 @@ export default function AddAppTabScreen() {
   const [githubDescription, setGithubDescription] = useState('');
   const [githubIconUrl, setGithubIconUrl] = useState('');
   const [githubCategory, setGithubCategory] = useState('Sideloading');
+  const [githubDeliveryMode, setGithubDeliveryMode] = useState<ImportDeliveryMode>('direct-source');
+  const [githubUpdatePolicy, setGithubUpdatePolicy] = useState<AppUpdatePolicy>('daily');
+  const [githubHistoryLimit, setGithubHistoryLimit] = useState<ImportHistoryLimit>(3);
   const [githubReleaseChannel, setGithubReleaseChannel] = useState<GitHubReleaseChannel>('release');
   const [githubReleaseTag, setGithubReleaseTag] = useState('');
   const [githubActionsCommit, setGithubActionsCommit] = useState('');
@@ -194,6 +205,9 @@ export default function AddAppTabScreen() {
   const [githubActionsLoadError, setGithubActionsLoadError] = useState('');
 
   const [repoUrl, setRepoUrl] = useState('');
+  const [repoDeliveryMode, setRepoDeliveryMode] = useState<ImportDeliveryMode>('direct-source');
+  const [repoUpdatePolicy, setRepoUpdatePolicy] = useState<AppUpdatePolicy>('daily');
+  const [repoHistoryLimit, setRepoHistoryLimit] = useState<ImportHistoryLimit>(3);
   const [stagedApps, setStagedApps] = useState<StagedRepositoryApp[]>([]);
   const [isReviewSheetPresented, setIsReviewSheetPresented] = useState(false);
 
@@ -304,6 +318,9 @@ export default function AddAppTabScreen() {
         description,
         category: directCategory,
         iconUrl: directIconUrl || undefined,
+        deliveryMode: upload ? 'mirror-release' : directDeliveryMode,
+        updatePolicy: 'static',
+        historyLimit: directHistoryLimit,
         ...(upload ? {
           uploadRepository: upload.uploadRepository,
           uploadReleaseTag: upload.stagingReleaseTag,
@@ -314,18 +331,22 @@ export default function AddAppTabScreen() {
       setDirectName('');
       setDirectDescription('');
       setDirectIconUrl('');
+      setDirectDeliveryMode('direct-source');
+      setDirectHistoryLimit(3);
       setStagedIpa(null);
       setDirectUploaderGeneration((generation) => generation + 1);
       Alert.alert(
         upload ? 'Uploaded IPA Queued' : 'Direct IPA Queued',
-        'The private importer will inspect the IPA before it publishes an asset or changes repo.json.',
+        upload
+          ? 'The private importer will inspect the local IPA, then keep its verified mirror copy before changing repo.json.'
+          : 'The private importer will inspect metadata and preserve the original source link unless you explicitly chose a mirror copy.',
       );
     } catch (error: any) {
       Alert.alert('Could Not Queue IPA', error instanceof ImportSourceError ? error.message : error?.message || 'Check the IPA and icon URLs.');
     } finally {
       setIsSaving(false);
     }
-  }, [directCategory, directDescription, directIconUrl, directName, directUrl, stagedIpa]);
+  }, [directCategory, directDeliveryMode, directDescription, directHistoryLimit, directIconUrl, directName, directUrl, stagedIpa]);
 
   const handleAddGithub = useCallback(async () => {
     setIsSaving(true);
@@ -341,6 +362,9 @@ export default function AddAppTabScreen() {
         description: githubDescription || undefined,
         iconUrl: githubIconUrl || undefined,
         category: githubCategory,
+        deliveryMode: githubReleaseChannel === 'actions' ? 'mirror-release' : githubDeliveryMode,
+        updatePolicy: githubUpdatePolicy,
+        historyLimit: githubUpdatePolicy === 'daily' ? 1 : githubHistoryLimit,
         githubReleaseChannel,
         githubReleaseTag: githubReleaseChannel === 'tag' ? githubReleaseTag : undefined,
         githubActionsCommit: githubReleaseChannel === 'actions' ? githubActionsCommit : undefined,
@@ -349,16 +373,24 @@ export default function AddAppTabScreen() {
       setGithubName('');
       setGithubDescription('');
       setGithubIconUrl('');
+      setGithubDeliveryMode('direct-source');
+      setGithubUpdatePolicy('daily');
+      setGithubHistoryLimit(3);
       setGithubReleaseChannel('release');
       setGithubReleaseTag('');
       setGithubActionsCommit('');
-      Alert.alert('GitHub Import Queued', 'The private importer will validate the selected GitHub source, inspect its IPA, and publish only verified metadata.');
+      Alert.alert(
+        'GitHub Import Queued',
+        githubReleaseChannel === 'actions'
+          ? 'Actions artifacts expire, so the importer will keep a verified mirror copy. Other GitHub sources use their original link unless you chose a mirror.'
+          : 'The importer will use the selected GitHub source and keep its original link unless you explicitly chose a mirror copy.',
+      );
     } catch (error: any) {
       Alert.alert('GitHub Import Failed', error?.message || 'Could not queue this GitHub source for validation.');
     } finally {
       setIsSaving(false);
     }
-  }, [githubActionsCommit, githubCategory, githubDescription, githubIconUrl, githubName, githubReleaseChannel, githubReleaseTag, githubRepository]);
+  }, [githubActionsCommit, githubCategory, githubDeliveryMode, githubDescription, githubHistoryLimit, githubIconUrl, githubName, githubReleaseChannel, githubReleaseTag, githubRepository, githubUpdatePolicy]);
 
   const handleExtractRepository = useCallback(async () => {
     setIsSaving(true);
@@ -431,13 +463,22 @@ export default function AddAppTabScreen() {
           iconUrl: app.iconURL || undefined,
           category,
           selector: app.bundleIdentifier,
+          deliveryMode: repoDeliveryMode,
+          updatePolicy: repoUpdatePolicy,
+          historyLimit: repoUpdatePolicy === 'daily' ? 1 : repoHistoryLimit,
         });
         queued += 1;
       }
       setIsReviewSheetPresented(false);
       setStagedApps([]);
       setRepoUrl('');
-      Alert.alert('Repository Imports Queued', `${queued} ${queued === 1 ? 'app is' : 'apps are'} being rechecked privately before any catalog change is published.`);
+      setRepoDeliveryMode('direct-source');
+      setRepoUpdatePolicy('daily');
+      setRepoHistoryLimit(3);
+      Alert.alert(
+        'Repository Imports Queued',
+        `${queued} ${queued === 1 ? 'app is' : 'apps are'} being checked from the source repository before any catalog change is published. Original source links stay in place unless you chose a mirror.`,
+      );
     } catch (error: any) {
       Alert.alert(
         'Repository Queue Paused',
@@ -448,7 +489,7 @@ export default function AddAppTabScreen() {
     } finally {
       setIsSaving(false);
     }
-  }, [repoUrl, stagedApps]);
+  }, [repoDeliveryMode, repoHistoryLimit, repoUpdatePolicy, repoUrl, stagedApps]);
 
   const handleAddTelegram = useCallback(async () => {
     if (!telegramName.trim() || !telegramDescription.trim()) {
@@ -576,6 +617,29 @@ export default function AddAppTabScreen() {
                   </Text>
                 ) : null}
                 <FormField theme={theme} label={stagedIpa ? 'Or use a Direct IPA URL' : 'IPA Download URL'} placeholder="https://example.com/app.ipa" value={directUrl} onChangeText={handleDirectUrlChange} autoCapitalize="none" keyboardType="url" />
+                <ImportDeliveryPicker
+                  accentColor={accent}
+                  allowedModes={stagedIpa ? ['mirror-release'] : ['direct-source', 'mirror-release']}
+                  detail={stagedIpa
+                    ? 'Local IPA uploads have no permanent upstream URL, so ryP0 keeps one verified mirror copy.'
+                    : 'Use the original URL by default. Choose a mirror only when you explicitly want ryP0 to keep a copy.'}
+                  disabled={isSaving || Boolean(stagedIpa)}
+                  onChange={setDirectDeliveryMode}
+                  value={stagedIpa ? 'mirror-release' : directDeliveryMode}
+                />
+                <ImportUpdatePolicyPicker
+                  accentColor={accent}
+                  detail="A one-off direct IPA link is manual. Add a new version yourself when its source changes."
+                  disabled
+                  onChange={() => undefined}
+                  value="static"
+                />
+                <ImportHistoryLimitPicker
+                  accentColor={accent}
+                  disabled={isSaving}
+                  onChange={setDirectHistoryLimit}
+                  value={directHistoryLimit}
+                />
                 <FormField theme={theme} label="App Display Name (Optional)" placeholder="Automatically derived from the IPA filename" value={directName} onChangeText={setDirectName} />
                 <FormField theme={theme} label="Description (Optional)" placeholder="What does this app do?" value={directDescription} onChangeText={setDirectDescription} multiline />
                 <FormField theme={theme} label="Icon URL (Optional)" placeholder="https://…/icon.png" value={directIconUrl} onChangeText={setDirectIconUrl} autoCapitalize="none" keyboardType="url" />
@@ -589,11 +653,16 @@ export default function AddAppTabScreen() {
             {importMethod === 'github' ? (
               <SectionCard title="GitHub App Finder" detail="Choose the exact source: stable Release, Nightly, Alpha, a specific Tag, or the newest successful Actions build. The importer uses app metadata when available and never uses a developer profile photo as the app icon." theme={theme}>
                 <FormField theme={theme} label="GitHub Repository" placeholder="owner/repository or https://github.com/owner/repository" value={githubRepository} onChangeText={setGithubRepository} autoCapitalize="none" />
+                <Text selectable style={[styles.inputLabel, { color: theme.label }]}>Release source</Text>
+                <Text selectable style={[styles.pickerHint, { color: theme.secondaryLabel }]}>Tap to choose Release, Nightly, Alpha, Tag, or a successful Workflow build.</Text>
                 <GitHubReleaseChannelPicker
                   accentColor={accent}
                   disabled={isSaving}
                   value={githubReleaseChannel}
-                  onChange={setGithubReleaseChannel}
+                  onChange={(nextChannel) => {
+                    setGithubReleaseChannel(nextChannel);
+                    if (nextChannel === 'actions') setGithubDeliveryMode('mirror-release');
+                  }}
                 />
                 {githubReleaseChannel === 'tag' ? (
                   <FormField theme={theme} label="Release Tag" placeholder="v1.2.3" value={githubReleaseTag} onChangeText={setGithubReleaseTag} autoCapitalize="none" />
@@ -613,6 +682,33 @@ export default function AddAppTabScreen() {
                     ) : null}
                   </>
                 ) : null}
+                <ImportDeliveryPicker
+                  accentColor={accent}
+                  allowedModes={githubReleaseChannel === 'actions' ? ['mirror-release'] : ['direct-source', 'mirror-release']}
+                  detail={githubReleaseChannel === 'actions'
+                    ? 'GitHub Actions artifacts expire, so this source must be copied to a verified mirror.'
+                    : 'Use the upstream download URL by default. Choose a mirror only when you explicitly want ryP0 to retain a copy.'}
+                  disabled={isSaving || githubReleaseChannel === 'actions'}
+                  onChange={setGithubDeliveryMode}
+                  value={githubReleaseChannel === 'actions' ? 'mirror-release' : githubDeliveryMode}
+                />
+                <ImportUpdatePolicyPicker
+                  accentColor={accent}
+                  detail={githubUpdatePolicy === 'daily'
+                    ? 'Checks the selected source each day and keeps only the newest version.'
+                    : 'Stops automatic checks so you can manage a manual version history.'}
+                  disabled={isSaving}
+                  onChange={setGithubUpdatePolicy}
+                  value={githubUpdatePolicy}
+                />
+                {githubUpdatePolicy === 'static' ? (
+                  <ImportHistoryLimitPicker
+                    accentColor={accent}
+                    disabled={isSaving}
+                    onChange={setGithubHistoryLimit}
+                    value={githubHistoryLimit}
+                  />
+                ) : null}
                 <FormField theme={theme} label="Rename App (Optional)" placeholder="Keep the repository name" value={githubName} onChangeText={setGithubName} />
                 <FormField theme={theme} label="Description (Optional)" placeholder="Use the release or repository description" value={githubDescription} onChangeText={setGithubDescription} multiline />
                 <FormField theme={theme} label="Icon URL (Optional)" placeholder="Automatically detected when empty" value={githubIconUrl} onChangeText={setGithubIconUrl} autoCapitalize="none" keyboardType="url" />
@@ -626,6 +722,30 @@ export default function AddAppTabScreen() {
             {importMethod === 'repo' ? (
               <SectionCard title="Repository Extractor" detail="Extract a compatible repo.json, search every valid app, select the entries you want, and set a category for each one before anything is written." theme={theme}>
                 <FormField theme={theme} label="Repository JSON URL" placeholder="https://community.example/repo.json" value={repoUrl} onChangeText={setRepoUrl} autoCapitalize="none" keyboardType="url" />
+                <ImportDeliveryPicker
+                  accentColor={accent}
+                  detail="Use each selected app’s original source link by default. A mirror is an explicit per-import choice."
+                  disabled={isSaving}
+                  onChange={setRepoDeliveryMode}
+                  value={repoDeliveryMode}
+                />
+                <ImportUpdatePolicyPicker
+                  accentColor={accent}
+                  detail={repoUpdatePolicy === 'daily'
+                    ? 'Checks each selected source daily and keeps only its newest version.'
+                    : 'Stops automatic checks so you can manage a manual version history.'}
+                  disabled={isSaving}
+                  onChange={setRepoUpdatePolicy}
+                  value={repoUpdatePolicy}
+                />
+                {repoUpdatePolicy === 'static' ? (
+                  <ImportHistoryLimitPicker
+                    accentColor={accent}
+                    disabled={isSaving}
+                    onChange={setRepoHistoryLimit}
+                    value={repoHistoryLimit}
+                  />
+                ) : null}
                 {primaryButton('Extract & Review Apps', () => void handleExtractRepository())}
                 {stagedApps.length ? (
                   <TouchableOpacity
@@ -649,6 +769,21 @@ export default function AddAppTabScreen() {
                 <FormField theme={theme} label="Developer Name (Optional)" placeholder="Let the importer use source metadata" value={telegramDeveloper} onChangeText={setTelegramDeveloper} />
                 <FormField theme={theme} label="Icon URL (Optional)" placeholder="https://…/icon.png" value={telegramIconUrl} onChangeText={setTelegramIconUrl} autoCapitalize="none" keyboardType="url" />
                 <IconPickerRow value={telegramIconUrl} target="telegram" theme={theme} accent={accent} onOpenGallery={openIconGallery} />
+                <ImportDeliveryPicker
+                  accentColor={accent}
+                  allowedModes={['r2']}
+                  detail="Telegram IPA files are always validated, then stored in your protected R2 bucket."
+                  disabled
+                  onChange={() => undefined}
+                  value="r2"
+                />
+                <ImportUpdatePolicyPicker
+                  accentColor={accent}
+                  detail="Telegram sources are checked daily and retain only the newest verified version."
+                  disabled
+                  onChange={() => undefined}
+                  value="daily"
+                />
                 <Text selectable style={[styles.inputLabel, { color: theme.label }]}>Category</Text>
                 <AppCategoryTabs categories={CATEGORIES} selectedCategory={telegramCategory} onSelectCategory={setTelegramCategory} accentColor={accent} />
                 {primaryButton('Queue Telegram Import', () => void handleAddTelegram())}
@@ -713,6 +848,7 @@ const styles = StyleSheet.create({
   stagedUploadDetail: { marginTop: -4, marginBottom: 12, fontSize: 12, lineHeight: 17 },
   field: { marginBottom: 14 },
   inputLabel: { marginBottom: 6, fontSize: 13, fontWeight: '600' },
+  pickerHint: { fontSize: 12, lineHeight: 17, marginTop: -3, marginBottom: 4 },
   input: { minHeight: 44, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 12, borderWidth: StyleSheet.hairlineWidth, fontSize: 15 },
   multilineInput: { minHeight: 78, textAlignVertical: 'top' },
   actionsLoadError: { fontSize: 13, lineHeight: 18, marginTop: -8, marginBottom: 14 },

@@ -679,6 +679,9 @@ async function queueTelegramWorkflow(input: {
     iconUrl: input.iconURL,
     developerName: input.developerName,
     expectedBundleIdentifier: input.bundleIdentifier,
+    deliveryMode: 'r2',
+    updatePolicy: 'daily',
+    historyLimit: 1,
     archiveToR2: true,
   });
   return {

@@ -14,16 +14,53 @@ const SAFE_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const SAFE_REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const SAFE_BUNDLE_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9.-]{0,254}$/;
 const SAFE_SHA = /^[a-f0-9]{40}([a-f0-9]{24})?$/i;
+const SAFE_GIT_COMMIT = /^[a-f0-9]{7,64}$/i;
+const SAFE_GIT_REF = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$/;
+const SAFE_R2_OBJECT_KEY = /^(?!\/)(?!.*(?:^|\/)\.?(?:\.|\/))(?!.*\/\/)[A-Za-z0-9][A-Za-z0-9!_.*'()/-]{0,511}\.ipa$/;
+const MIN_HISTORY_LIMIT = 1;
+const MAX_HISTORY_LIMIT = 12;
 
-type VersionMode = 'tag' | 'tag_without_v' | 'nightly_date' | 'timestamp' | 'embedded';
+type VersionMode = 'tag' | 'tag_without_v' | 'nightly_date' | 'timestamp' | 'embedded' | 'commit';
+
+/** The user-facing GitHub choices for a release-backed app. */
+export type GitHubReleaseChannel = 'release' | 'nightly' | 'alpha';
+
+export type GitHubReleaseSelector =
+  | 'latest'
+  | 'latest_prerelease'
+  | 'tag_or_prerelease'
+  | 'stable_ios'
+  | 'first_with_ipa'
+  | 'channel'
+  | 'tag';
 
 export interface GitHubReleaseAutomationSource {
   kind: 'github_release';
   repository: string;
-  selector: 'latest' | 'latest_prerelease' | 'tag_or_prerelease' | 'stable_ios' | 'first_with_ipa';
+  selector: GitHubReleaseSelector;
+  /**
+   * Optional display/source intent retained alongside the normalized updater
+   * selector. Older configs have no channel and continue to use `selector`.
+   */
+  channel?: GitHubReleaseChannel;
   tag?: string;
   assetPattern: string;
   releaseNamePattern?: string;
+  versionMode: VersionMode;
+}
+
+/** A latest successful GitHub Actions artifact, optionally scoped to one build. */
+export interface GitHubActionsAutomationSource {
+  kind: 'github_actions';
+  repository: string;
+  /** Optional upstream workflow name, numeric ID, or workflow file path. */
+  workflow?: string;
+  /** Optional branch/ref used to narrow the latest successful build. */
+  branch?: string;
+  /** Optional SHA selected by an administrator for a fixed Actions build. */
+  commit?: string;
+  /** Python regular expression used to choose the artifact containing the IPA. */
+  artifactPattern: string;
   versionMode: VersionMode;
 }
 
@@ -54,7 +91,10 @@ export interface ForgejoReleaseAutomationSource {
 export interface RepositoryAutomationSource {
   kind: 'repo_json';
   url: string;
-  appNamePattern: string;
+  /** Legacy matcher retained for external repositories without stable IDs. */
+  appNamePattern?: string;
+  /** Preferred exact source bundle identifier; avoids name-based collisions. */
+  bundleIdentifier?: string;
   versionMode: VersionMode;
 }
 
@@ -67,11 +107,34 @@ export interface TelegramAutomationSource {
 
 export type AppAutomationSource =
   | GitHubReleaseAutomationSource
+  | GitHubActionsAutomationSource
   | ArchiveAutomationSource
   | GitLabReleaseAutomationSource
   | ForgejoReleaseAutomationSource
   | RepositoryAutomationSource
   | TelegramAutomationSource;
+
+/** Keep the resolved upstream link in repo.json; no IPA is copied to ryP0. */
+export interface DirectSourceAutomationDelivery {
+  kind: 'direct_source';
+}
+
+/** Explicit opt-in copy of an IPA into the managed GitHub Release. */
+export interface MirrorReleaseAutomationDelivery {
+  kind: 'mirror_release';
+  assetName: string;
+}
+
+/** Private R2 storage used for a Telegram/imported IPA, exposed via its public domain. */
+export interface R2AutomationDelivery {
+  kind: 'r2';
+  objectKey: string;
+}
+
+export type AppAutomationDelivery =
+  | DirectSourceAutomationDelivery
+  | MirrorReleaseAutomationDelivery
+  | R2AutomationDelivery;
 
 export interface AppAutomationConfiguration {
   id: string;
@@ -80,11 +143,10 @@ export interface AppAutomationConfiguration {
   sourceBundleIdentifier: string;
   bundleIdentifierPattern?: string;
   enabled?: boolean;
+  /** Number of versions retained by the private updater, from 1 through 12. */
+  historyLimit: number;
   source: AppAutomationSource;
-  delivery: {
-    kind: 'mirror_release';
-    assetName: string;
-  };
+  delivery: AppAutomationDelivery;
 }
 
 export interface AppAutomationSnapshot {
@@ -147,11 +209,96 @@ function validateVersionMode(value: unknown): VersionMode {
     value !== 'tag_without_v' &&
     value !== 'nightly_date' &&
     value !== 'timestamp' &&
-    value !== 'embedded'
+    value !== 'embedded' &&
+    value !== 'commit'
   ) {
     throw new GitHubApiError('An app updater has an unsupported version mode.', 0, 'INVALID_RESPONSE');
   }
   return value;
+}
+
+function validateOptionalString(value: unknown, label: string, maximum = 2_048): string | undefined {
+  return value === undefined ? undefined : requiredString(value, label, maximum);
+}
+
+function validateGitHubRepository(value: unknown, label: string): string {
+  const repository = requiredString(value, label, 180);
+  if (!SAFE_REPOSITORY.test(repository)) {
+    throw new GitHubApiError(`${label} is invalid in the private automation configuration.`, 0, 'INVALID_RESPONSE');
+  }
+  return repository;
+}
+
+function validateGitHubReleaseChannel(value: unknown, appId: string): GitHubReleaseChannel | undefined {
+  if (value === undefined) return undefined;
+  if (value === 'release' || value === 'nightly' || value === 'alpha') {
+    return value;
+  }
+  throw new GitHubApiError(`${appId} has an invalid GitHub release channel.`, 0, 'INVALID_RESPONSE');
+}
+
+function validateGitHubReleaseSelector(
+  value: unknown,
+  appId: string,
+  channel: GitHubReleaseChannel | undefined,
+): GitHubReleaseSelector {
+  if (value === undefined && channel) return 'channel';
+  if (
+    value === 'latest' ||
+    value === 'latest_prerelease' ||
+    value === 'tag_or_prerelease' ||
+    value === 'stable_ios' ||
+    value === 'first_with_ipa' ||
+    value === 'channel' ||
+    value === 'tag'
+  ) {
+    return value;
+  }
+  throw new GitHubApiError(`${appId} has an invalid GitHub release selector.`, 0, 'INVALID_RESPONSE');
+}
+
+function validateHistoryLimit(value: unknown, appId: string): number {
+  // The first private config revision did not serialise historyLimit. Its
+  // updater default was 12, so preserve that meaning rather than treating
+  // existing mirror-only entries as malformed.
+  if (value === undefined) return MAX_HISTORY_LIMIT;
+  if (
+    typeof value !== 'number' ||
+    !Number.isInteger(value) ||
+    value < MIN_HISTORY_LIMIT ||
+    value > MAX_HISTORY_LIMIT
+  ) {
+    throw new GitHubApiError(
+      `${appId} history limit must be a whole number from ${MIN_HISTORY_LIMIT} to ${MAX_HISTORY_LIMIT}.`,
+      0,
+      'INVALID_RESPONSE',
+    );
+  }
+  return value;
+}
+
+function validateDelivery(value: unknown, appId: string): AppAutomationDelivery {
+  if (!isRecord(value)) {
+    throw new GitHubApiError(`${appId} has no valid delivery policy.`, 0, 'INVALID_RESPONSE');
+  }
+  if (value.kind === 'direct_source') {
+    return { kind: 'direct_source' };
+  }
+  if (value.kind === 'mirror_release') {
+    const assetName = requiredString(value.assetName, `${appId} release asset`, 160);
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,159}\.ipa$/.test(assetName)) {
+      throw new GitHubApiError(`${appId} has an invalid release asset name.`, 0, 'INVALID_RESPONSE');
+    }
+    return { kind: 'mirror_release', assetName };
+  }
+  if (value.kind === 'r2') {
+    const objectKey = requiredString(value.objectKey, `${appId} R2 object key`, 512);
+    if (!SAFE_R2_OBJECT_KEY.test(objectKey)) {
+      throw new GitHubApiError(`${appId} has an invalid R2 object key.`, 0, 'INVALID_RESPONSE');
+    }
+    return { kind: 'r2', objectKey };
+  }
+  throw new GitHubApiError(`${appId} has an unsupported delivery policy.`, 0, 'INVALID_RESPONSE');
 }
 
 function validateSource(value: unknown, appId: string): AppAutomationSource {
@@ -160,30 +307,56 @@ function validateSource(value: unknown, appId: string): AppAutomationSource {
   }
   const versionMode = validateVersionMode(value.versionMode);
   if (value.kind === 'github_release') {
-    const repository = requiredString(value.repository, `${appId} GitHub repository`, 180);
-    if (!SAFE_REPOSITORY.test(repository)) {
-      throw new GitHubApiError(`${appId} has an invalid GitHub repository.`, 0, 'INVALID_RESPONSE');
+    const channel = validateGitHubReleaseChannel(value.channel, appId);
+    const selector = validateGitHubReleaseSelector(value.selector, appId, channel);
+    const tag = validateOptionalString(value.tag, `${appId} release tag`, 180);
+    const requiresTag = selector === 'tag_or_prerelease' || selector === 'tag';
+    if (requiresTag && !tag) {
+      throw new GitHubApiError(`${appId} needs an exact release tag.`, 0, 'INVALID_RESPONSE');
     }
-    const selector = value.selector;
-    if (
-      selector !== 'latest' &&
-      selector !== 'latest_prerelease' &&
-      selector !== 'tag_or_prerelease' &&
-      selector !== 'stable_ios' &&
-      selector !== 'first_with_ipa'
-    ) {
-      throw new GitHubApiError(`${appId} has an invalid GitHub release selector.`, 0, 'INVALID_RESPONSE');
+    if (tag && !requiresTag) {
+      throw new GitHubApiError(`${appId} can use a release tag only with the tag selector.`, 0, 'INVALID_RESPONSE');
+    }
+    if (selector === 'channel' && !channel) {
+      throw new GitHubApiError(`${appId} needs a release, nightly, or alpha channel.`, 0, 'INVALID_RESPONSE');
+    }
+    if (channel && selector !== 'channel') {
+      throw new GitHubApiError(`${appId} may only use a channel with the channel selector.`, 0, 'INVALID_RESPONSE');
     }
     return {
       kind: 'github_release',
-      repository,
+      repository: validateGitHubRepository(value.repository, `${appId} GitHub repository`),
       selector,
       assetPattern: validatePattern(value.assetPattern, `${appId} IPA asset pattern`),
       versionMode,
-      ...(typeof value.tag === 'string' ? { tag: requiredString(value.tag, `${appId} release tag`, 180) } : {}),
+      ...(channel ? { channel } : {}),
+      ...(tag ? { tag } : {}),
       ...(typeof value.releaseNamePattern === 'string'
         ? { releaseNamePattern: validatePattern(value.releaseNamePattern, `${appId} release name pattern`) }
         : {}),
+    };
+  }
+  if (value.kind === 'github_actions') {
+    const workflow = validateOptionalString(value.workflow, `${appId} Actions workflow`, 256);
+    const branch = validateOptionalString(value.branch, `${appId} Actions branch`, 255);
+    const commit = validateOptionalString(value.commit, `${appId} Actions commit`, 64);
+    if (workflow && (workflow.includes('..') || /[\\\u0000-\u001f\u007f]/.test(workflow))) {
+      throw new GitHubApiError(`${appId} has an invalid Actions workflow selector.`, 0, 'INVALID_RESPONSE');
+    }
+    if (branch && (!SAFE_GIT_REF.test(branch) || branch.includes('..') || branch.endsWith('.'))) {
+      throw new GitHubApiError(`${appId} has an invalid Actions branch.`, 0, 'INVALID_RESPONSE');
+    }
+    if (commit && !SAFE_GIT_COMMIT.test(commit)) {
+      throw new GitHubApiError(`${appId} has an invalid Actions commit.`, 0, 'INVALID_RESPONSE');
+    }
+    return {
+      kind: 'github_actions',
+      repository: validateGitHubRepository(value.repository, `${appId} GitHub repository`),
+      artifactPattern: validatePattern(value.artifactPattern, `${appId} Actions artifact pattern`),
+      versionMode,
+      ...(workflow ? { workflow } : {}),
+      ...(branch ? { branch } : {}),
+      ...(commit ? { commit: commit.toLowerCase() } : {}),
     };
   }
   if (value.kind === 'archive') {
@@ -223,11 +396,24 @@ function validateSource(value: unknown, appId: string): AppAutomationSource {
     };
   }
   if (value.kind === 'repo_json') {
+    const appNamePattern = typeof value.appNamePattern === 'string'
+      ? validatePattern(value.appNamePattern, `${appId} app selector`)
+      : undefined;
+    const bundleIdentifier = typeof value.bundleIdentifier === 'string'
+      ? requiredString(value.bundleIdentifier, `${appId} source bundle identifier`, 255)
+      : undefined;
+    if (bundleIdentifier && !SAFE_BUNDLE_IDENTIFIER.test(bundleIdentifier)) {
+      throw new GitHubApiError(`${appId} has an invalid repo.json bundle identifier.`, 0, 'INVALID_RESPONSE');
+    }
+    if (!appNamePattern && !bundleIdentifier) {
+      throw new GitHubApiError(`${appId} needs an app-name pattern or exact bundle identifier.`, 0, 'INVALID_RESPONSE');
+    }
     return {
       kind: 'repo_json',
       url: validateUrl(value.url, `${appId} repo.json URL`),
-      appNamePattern: validatePattern(value.appNamePattern, `${appId} app selector`),
       versionMode,
+      ...(appNamePattern ? { appNamePattern } : {}),
+      ...(bundleIdentifier ? { bundleIdentifier } : {}),
     };
   }
   if (value.kind === 'telegram') {
@@ -265,13 +451,6 @@ function validateApp(value: unknown): AppAutomationConfiguration {
   if (value.enabled !== undefined && typeof value.enabled !== 'boolean') {
     throw new GitHubApiError(`${id} has an invalid enabled state.`, 0, 'INVALID_RESPONSE');
   }
-  if (!isRecord(value.delivery) || value.delivery.kind !== 'mirror_release') {
-    throw new GitHubApiError(`${id} has an invalid release delivery policy.`, 0, 'INVALID_RESPONSE');
-  }
-  const assetName = requiredString(value.delivery.assetName, `${id} release asset`, 160);
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,159}\.ipa$/.test(assetName)) {
-    throw new GitHubApiError(`${id} has an invalid release asset name.`, 0, 'INVALID_RESPONSE');
-  }
   return {
     id,
     displayName: requiredString(value.displayName, `${id} display name`, 160),
@@ -281,8 +460,9 @@ function validateApp(value: unknown): AppAutomationConfiguration {
       ? { bundleIdentifierPattern: validatePattern(value.bundleIdentifierPattern, `${id} bundle pattern`) }
       : {}),
     ...(typeof value.enabled === 'boolean' ? { enabled: value.enabled } : {}),
+    historyLimit: validateHistoryLimit(value.historyLimit, id),
     source: validateSource(value.source, id),
-    delivery: { kind: 'mirror_release', assetName },
+    delivery: validateDelivery(value.delivery, id),
   };
 }
 

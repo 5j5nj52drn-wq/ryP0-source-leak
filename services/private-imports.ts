@@ -5,6 +5,13 @@ import {
   isGitHubReleaseChannel,
   type GitHubReleaseChannel,
 } from '../types/github-release-channel';
+import {
+  isImportDeliveryMode,
+  isImportHistoryLimit,
+  type ImportDeliveryMode,
+  type ImportHistoryLimit,
+} from '../types/import-options';
+import type { AppUpdatePolicy } from '../types/repo';
 
 /** The only manual-admin importer in the private automation repository. */
 const IMPORT_WORKFLOW_PATH = '.github/workflows/import-app.yml';
@@ -42,6 +49,13 @@ export interface PrivateImportInput {
   githubReleaseTag?: string;
   /** Optional SHA/prefix that scopes a GitHub Actions import to one commit. */
   githubActionsCommit?: string;
+  /** Default is the original source URL; a mirror requires an explicit choice. */
+  deliveryMode?: ImportDeliveryMode;
+  /** Daily imports track only their current version; static imports are manual. */
+  updatePolicy?: AppUpdatePolicy;
+  /** Only applies to static imports. Daily imports must keep a single latest version. */
+  historyLimit?: ImportHistoryLimit;
+  /** @deprecated Telegram imports always archive to R2. */
   archiveToR2?: boolean;
 }
 
@@ -86,6 +100,18 @@ function githubRepositoryUrl(value: string) {
   return `https://github.com/${parts[0]}/${parts[1].replace(/\.git$/i, '')}`;
 }
 
+function defaultDeliveryMode(method: PrivateImportMethod): ImportDeliveryMode {
+  if (method === 'telegram-r2') return 'r2';
+  if (method === 'upload-artifact') return 'mirror-release';
+  return 'direct-source';
+}
+
+function defaultUpdatePolicy(method: PrivateImportMethod): AppUpdatePolicy {
+  return method === 'github' || method === 'repository' || method === 'telegram-r2'
+    ? 'daily'
+    : 'static';
+}
+
 /**
  * Starts the fixed private importer with bounded values. The phone needs only
  * the administrator's device-protected GitHub credential to dispatch it; the
@@ -116,8 +142,29 @@ export async function queuePrivateImport(input: PrivateImportInput): Promise<{ w
   const githubReleaseChannel = clean(input.githubReleaseChannel, 24).toLowerCase() || 'release';
   const githubReleaseTag = clean(input.githubReleaseTag, 128);
   const githubActionsCommit = clean(input.githubActionsCommit, 40).toLowerCase();
+  const deliveryMode = input.deliveryMode ?? defaultDeliveryMode(method);
+  const updatePolicy = input.updatePolicy ?? defaultUpdatePolicy(method);
+  const historyLimit = input.historyLimit ?? (updatePolicy === 'daily' ? 1 : 3);
 
   if (!category) throw new PrivateImportError('Choose a category.');
+  if (!isImportDeliveryMode(deliveryMode)) {
+    throw new PrivateImportError('Choose where this IPA should be delivered from.');
+  }
+  if (updatePolicy !== 'daily' && updatePolicy !== 'static') {
+    throw new PrivateImportError('Choose a valid update policy.');
+  }
+  if (!isImportHistoryLimit(historyLimit)) {
+    throw new PrivateImportError('Choose how many static versions to keep.');
+  }
+  if (updatePolicy === 'daily' && historyLimit !== 1) {
+    throw new PrivateImportError('Daily imports keep one current version. Choose Static / manual to keep version history.');
+  }
+  if (method === 'telegram-r2' && deliveryMode !== 'r2') {
+    throw new PrivateImportError('Telegram imports are always stored in protected R2 storage.');
+  }
+  if (method === 'upload-artifact' && deliveryMode !== 'mirror-release') {
+    throw new PrivateImportError('A local IPA needs a mirror copy because it has no permanent upstream link.');
+  }
   if ((method === 'direct-url' || method === 'telegram-r2') && !appName) {
     throw new PrivateImportError('Enter an app name for this import.');
   }
@@ -163,6 +210,9 @@ export async function queuePrivateImport(input: PrivateImportInput): Promise<{ w
     if (githubActionsCommit && !/^[0-9a-f]{7,40}$/.test(githubActionsCommit)) {
       throw new PrivateImportError('Enter a Git commit SHA (at least 7 hexadecimal characters).');
     }
+    if (githubReleaseChannel === 'actions' && deliveryMode !== 'mirror-release') {
+      throw new PrivateImportError('GitHub Actions artifacts expire, so this source needs a mirror copy.');
+    }
   }
 
   const workflows = await listGitHubWorkflows();
@@ -177,6 +227,9 @@ export async function queuePrivateImport(input: PrivateImportInput): Promise<{ w
   const inputs: Record<string, string> = {
     method,
     category,
+    delivery_mode: deliveryMode,
+    update_policy: updatePolicy,
+    history_limit: String(historyLimit),
   };
   if (sourceUrl) inputs.source_url = sourceUrl;
   if (appName) inputs.app_name = appName;
@@ -194,7 +247,7 @@ export async function queuePrivateImport(input: PrivateImportInput): Promise<{ w
     if (githubReleaseTag) inputs.github_release_tag = githubReleaseTag;
     if (githubActionsCommit) inputs.github_actions_commit = githubActionsCommit;
   }
-  if (method === 'telegram-r2' && input.archiveToR2) inputs.archive_to_r2 = 'true';
+  if (method === 'telegram-r2') inputs.archive_to_r2 = 'true';
 
   await dispatchGitHubWorkflow(workflow.id, inputs);
   return workflow.htmlUrl ? { workflowUrl: workflow.htmlUrl } : {};

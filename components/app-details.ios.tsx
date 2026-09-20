@@ -8,7 +8,6 @@ import {
   Form,
   HStack,
   Image,
-  Label,
   LabeledContent,
   Section,
   Spacer,
@@ -25,7 +24,6 @@ import {
   foregroundStyle,
   frame,
   lineLimit,
-  labelStyle,
   listRowBackground,
   listRowSeparator,
   listSectionSpacing,
@@ -232,24 +230,24 @@ export default function AppDetails({ app }: AppDetailsProps) {
             </HStack>
           </Section>
 
-          {latestVersion ? (
+          {latestVersion || githubProjectUrl ? (
             <Section modifiers={[listRowBackground(Color.ios.secondarySystemGroupedBackground)]}>
-              <Button
-                onPress={handleInstall}
-                modifiers={[buttonStyle('borderedProminent'), tint(Color.ios.systemBlue)]}
-              >
-                <Label
-                  title="Install Latest Version"
-                  systemImage="arrow.down.circle.fill"
-                  modifiers={[labelStyle('titleAndIcon')]}
-                />
-              </Button>
-              <Button
-                label="Install in LiveContainer"
-                systemImage="shippingbox.fill"
-                onPress={() => void handleInstallInLiveContainer(latestVersion)}
-                modifiers={[buttonStyle('bordered')]}
-              />
+              {latestVersion ? (
+                <>
+                  <Button
+                    label="Install Latest Version"
+                    systemImage="arrow.down.circle.fill"
+                    onPress={handleInstall}
+                    modifiers={[buttonStyle('borderedProminent'), tint(Color.ios.systemBlue)]}
+                  />
+                  <Button
+                    label="Install in LiveContainer"
+                    systemImage="shippingbox.fill"
+                    onPress={() => void handleInstallInLiveContainer(latestVersion)}
+                    modifiers={[buttonStyle('bordered')]}
+                  />
+                </>
+              ) : null}
               {githubProjectUrl ? (
                 <Button
                   label="View on GitHub"
@@ -258,9 +256,11 @@ export default function AppDetails({ app }: AppDetailsProps) {
                   modifiers={[buttonStyle('bordered')]}
                 />
               ) : null}
-              <Text modifiers={[font({ size: 13 }), foregroundStyle(SECONDARY)]}>
-                {`Version ${latestVersion.version} · Released ${formatReleaseDate(latestVersion.date)}`}
-              </Text>
+              {latestVersion ? (
+                <Text modifiers={[font({ size: 13 }), foregroundStyle(SECONDARY)]}>
+                  {`Version ${latestVersion.version} · Released ${formatReleaseDate(latestVersion.date)}`}
+                </Text>
+              ) : null}
             </Section>
           ) : null}
 

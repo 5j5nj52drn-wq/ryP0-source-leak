@@ -9,7 +9,7 @@
     "userInterfaceStyle": "automatic",
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.ry0-x.ryP0",
+      "bundleIdentifier": "com.ry0.ryP0.admin",
       "infoPlist": {
         "LSApplicationQueriesSchemes": [
           "livecontainer"
@@ -35,7 +35,7 @@
         "android.permission.READ_MEDIA_VIDEO",
         "android.permission.READ_MEDIA_AUDIO"
       ],
-      "package": "com.ry0x.ryP0"
+      "package": "com.ry0.ryp0.admin"
     },
     "web": {
       "favicon": "./assets/favicon.png",

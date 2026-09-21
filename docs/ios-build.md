@@ -113,10 +113,10 @@ LiveContainer.
 
 The same private source tree produces two intentionally separate apps:
 
-- `admin` is **ryP0 Admin** (`com.ry0-x.ryP0`). It can unlock the verified
+- `admin` is **ryP0 Admin** (`com.ry0.ryP0.admin`). It can unlock the verified
   administrator account and stores its local GitHub credential in the device
   Keychain.
-- `public` is **ryP0** (`com.ry0-x.ryP0.public`). It cannot store a GitHub
+- `public` is **ryP0** (`com.ry0.ryP0`). It cannot store a GitHub
   credential or open catalog-management routes; it can browse the catalog and
   submit app requests for review.
 

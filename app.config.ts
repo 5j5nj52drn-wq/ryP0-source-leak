@@ -35,7 +35,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       ...baseConfig.ios,
       // The public build is deliberately a different app. It therefore cannot
       // read the Admin app's Keychain item even on the same phone.
-      bundleIdentifier: isAdmin ? 'com.ry0-x.ryP0' : 'com.ry0-x.ryP0.public',
+      bundleIdentifier: isAdmin ? 'com.ry0.ryP0.admin' : 'com.ry0.ryP0',
       infoPlist: {
         ...baseConfig.ios?.infoPlist,
         RyP0BuildVariant: variant,
@@ -43,7 +43,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     },
     android: {
       ...baseConfig.android,
-      package: isAdmin ? 'com.ry0x.ryP0' : 'com.ry0x.ryp0.public',
+      package: isAdmin ? 'com.ry0.ryp0.admin' : 'com.ry0.ryp0',
     },
     extra: {
       ...baseConfig.extra,

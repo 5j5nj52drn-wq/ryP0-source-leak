@@ -102,6 +102,17 @@ if [[ "$platform" != iphoneos ]]; then
   printf 'Unexpected build platform: %s\n' "$platform" >&2
   exit 1
 fi
+
+# Xcode 27 / iOS 27 requires UIKit's scene life cycle. Expo SDK 57 generates
+# this through expo-build-properties' ios.enableSceneSupport option. Verify the
+# finished product rather than letting an IPA that will trap at launch reach a
+# user or LiveContainer.
+scene_delegate="$(/usr/libexec/PlistBuddy -c 'Print :UIApplicationSceneManifest:UISceneConfigurations:UIWindowSceneSessionRoleApplication:0:UISceneDelegateClassName' "$app_path/Info.plist" 2>/dev/null || true)"
+if [[ "$scene_delegate" != 'EXExpoAppSceneDelegate' ]]; then
+  printf '%s\n' 'Missing Expo iOS scene lifecycle support in the built app.' \
+    'Enable ios.enableSceneSupport with expo-build-properties, regenerate ios, and rebuild.' >&2
+  exit 1
+fi
 # Xcode 26's lipo requires the input before the verification operation.
 xcrun lipo "$app_path/$executable" -verify_arch arm64
 

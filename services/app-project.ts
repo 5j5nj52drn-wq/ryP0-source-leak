@@ -1,7 +1,13 @@
 import type { RepoApp } from '../types/repo';
 import { getSafeGitHubRepositoryUrl } from './safe-url';
 
-const CATALOG_DELIVERY_REPOSITORY = 'https://github.com/Sami-Wali/ryP0-repository';
+// The public catalog and its former release host are delivery infrastructure,
+// not the developer's project.  Do not turn an IPA URL hosted there into a
+// misleading "View on GitHub" destination on an app's detail page.
+const CATALOG_DELIVERY_REPOSITORIES = new Set([
+  'https://github.com/Sami-Wali/ryP0-repository',
+  'https://github.com/Sami-Wali/ryP0',
+]);
 
 /**
  * Finds the upstream GitHub project for an app without exposing the private
@@ -18,7 +24,7 @@ export function getAppGitHubProjectUrl(app: Pick<RepoApp, 'githubURL' | 'automat
 
   for (const candidate of candidates) {
     const projectUrl = getSafeGitHubRepositoryUrl(candidate);
-    if (projectUrl && projectUrl !== CATALOG_DELIVERY_REPOSITORY) {
+    if (projectUrl && !CATALOG_DELIVERY_REPOSITORIES.has(projectUrl)) {
       return projectUrl;
     }
   }

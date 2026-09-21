@@ -36,10 +36,21 @@ function text(value: unknown, maximum = 160): string {
 }
 
 function parseRepository(reference: string): { owner: string; repository: string } | null {
-  const normalized = reference.trim().replace(/\/$/, '');
-  const slug = normalized.replace(/^https:\/\/github\.com\//i, '').replace(/\.git$/i, '');
-  if (!REPOSITORY_PATTERN.test(slug)) return null;
-  const [owner, repository] = slug.split('/');
+  let path = reference.trim();
+  if (/^https:\/\//i.test(path)) {
+    try {
+      const url = new URL(path);
+      if (url.hostname !== 'github.com' && url.hostname !== 'www.github.com') return null;
+      path = url.pathname;
+    } catch {
+      return null;
+    }
+  }
+  const parts = path.replace(/^\/+|\/+$/g, '').split('/').filter(Boolean);
+  if (parts.length !== 2) return null;
+  const [owner, rawRepository] = parts;
+  const repository = rawRepository.replace(/\.git$/i, '');
+  if (!repository || !REPOSITORY_PATTERN.test(`${owner}/${repository}`)) return null;
   return { owner, repository };
 }
 

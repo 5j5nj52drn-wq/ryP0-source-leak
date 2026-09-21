@@ -19,13 +19,16 @@ import {
   extractRepositoryApps,
   importTelegramApp,
   ImportSourceError,
+  listGitHubReleaseImportCandidates,
   normalizeHttpsUrl,
+  type GitHubReleaseImportCandidate,
 } from '../../../services/import-sources';
 import { queuePrivateImport } from '../../../services/private-imports';
 import { ACCENT_COLORS, useAppTheme } from '../../../theme/app-preferences';
 import AppCategoryTabs from '../../../components/app-category-tabs';
 import AppRequestForm from '../../../components/app-request-form';
 import GitHubActionsCommitPicker from '../../../components/github-actions-commit-picker';
+import GitHubReleaseCandidatePicker from '../../../components/github-release-candidate-picker';
 import GitHubReleaseChannelPicker from '../../../components/github-release-channel-picker';
 import ImportDeliveryPicker from '../../../components/import-delivery-picker';
 import ImportUpdatePolicyPicker, {
@@ -200,6 +203,11 @@ export default function AddAppTabScreen() {
   const [githubHistoryLimit, setGithubHistoryLimit] = useState<ImportHistoryLimit>(3);
   const [githubReleaseChannel, setGithubReleaseChannel] = useState<GitHubReleaseChannel>('release');
   const [githubReleaseTag, setGithubReleaseTag] = useState('');
+  const [githubSelectedRelease, setGithubSelectedRelease] = useState<GitHubReleaseImportCandidate | null>(null);
+  const [githubReleaseCandidates, setGithubReleaseCandidates] = useState<GitHubReleaseImportCandidate[]>([]);
+  const [isLoadingGithubReleases, setIsLoadingGithubReleases] = useState(false);
+  const [githubReleasesLoadError, setGithubReleasesLoadError] = useState('');
+  const [githubReleasesTruncated, setGithubReleasesTruncated] = useState(false);
   const [githubActionsCommit, setGithubActionsCommit] = useState('');
   const [githubActionBuildCommits, setGithubActionBuildCommits] = useState<GitHubActionBuildCommit[]>([]);
   const [isLoadingGithubActions, setIsLoadingGithubActions] = useState(false);
@@ -237,6 +245,55 @@ export default function AddAppTabScreen() {
     setPendingIconSelection(null);
     setIconTarget(null);
   }, [iconTarget, pendingIconSelection, setPendingIconSelection]);
+
+  // The catalogue contains public release metadata only. It deliberately does
+  // not use the administrator's credential: private automation resolves and
+  // validates the chosen IPA again before repo.json can change.
+  useEffect(() => {
+    const repository = githubRepository.trim();
+    if (!isGitHubRepositoryReference(repository)) {
+      setGithubReleaseCandidates([]);
+      setGithubSelectedRelease(null);
+      setGithubReleasesLoadError('');
+      setGithubReleasesTruncated(false);
+      setIsLoadingGithubReleases(false);
+      return;
+    }
+
+    let isCurrent = true;
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      setIsLoadingGithubReleases(true);
+      setGithubReleasesLoadError('');
+      void listGitHubReleaseImportCandidates(repository, { signal: controller.signal })
+        .then((catalogue) => {
+          if (!isCurrent) return;
+          setGithubReleaseCandidates([...catalogue.candidates]);
+          setGithubReleasesTruncated(catalogue.isTruncated);
+          setGithubSelectedRelease((current) => (
+            current && !catalogue.candidates.some((candidate) => candidate.id === current.id)
+              ? null
+              : current
+          ));
+        })
+        .catch((error: unknown) => {
+          if (!isCurrent || controller.signal.aborted) return;
+          setGithubReleaseCandidates([]);
+          setGithubSelectedRelease(null);
+          setGithubReleasesTruncated(false);
+          setGithubReleasesLoadError(error instanceof Error ? error.message : 'Could not load GitHub releases.');
+        })
+        .finally(() => {
+          if (isCurrent) setIsLoadingGithubReleases(false);
+        });
+    }, 450);
+
+    return () => {
+      isCurrent = false;
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [githubRepository]);
 
   useEffect(() => {
     const repository = githubRepository.trim();
@@ -278,6 +335,17 @@ export default function AddAppTabScreen() {
     setIconTarget(target);
     router.push('/icons?mode=select');
   }, [router]);
+
+  const handleGitHubRepositoryChange = useCallback((value: string) => {
+    // Never let a candidate from a previously typed repository be dispatched
+    // against a new repository reference while the debounced catalogue reloads.
+    setGithubRepository(value);
+    setGithubSelectedRelease(null);
+    setGithubReleaseCandidates([]);
+    setGithubReleasesLoadError('');
+    setGithubReleasesTruncated(false);
+    setGithubActionsCommit('');
+  }, []);
 
   const handleIpaUploaded = useCallback((result: IpaUploadResult) => {
     setStagedIpa(result);
@@ -352,7 +420,24 @@ export default function AddAppTabScreen() {
   const handleAddGithub = useCallback(async () => {
     setIsSaving(true);
     try {
-      if (githubReleaseChannel === 'tag' && !githubReleaseTag.trim()) {
+      // A Daily source follows a moving channel (and, when chosen, the same
+      // IPA asset name). A Static import pins the exact release tag + asset.
+      // Raw source tags remain manual because a Git tag alone does not prove
+      // that an installable IPA exists.
+      const selectedRelease = githubSelectedRelease;
+      const effectiveReleaseChannel: GitHubReleaseChannel = selectedRelease
+        ? githubUpdatePolicy === 'static' ? 'tag' : selectedRelease.channel
+        : githubReleaseChannel;
+      // Start a selected Daily source at the exact verified release/asset,
+      // then let its registered updater advance only within that channel and
+      // asset family. Without this tag, a versioned filename selected from an
+      // older release could be looked up against the newest release instead.
+      const effectiveReleaseTag = selectedRelease
+        ? selectedRelease.releaseTag
+        : effectiveReleaseChannel === 'tag' ? githubReleaseTag.trim() : undefined;
+      const effectiveReleaseAssetName = selectedRelease?.assetName;
+
+      if (effectiveReleaseChannel === 'tag' && !effectiveReleaseTag) {
         Alert.alert('Release Tag Required', 'Enter the exact GitHub tag you want to import.');
         return;
       }
@@ -363,12 +448,13 @@ export default function AddAppTabScreen() {
         description: githubDescription || undefined,
         iconUrl: githubIconUrl || undefined,
         category: githubCategory,
-        deliveryMode: githubReleaseChannel === 'actions' ? 'mirror-release' : githubDeliveryMode,
+        deliveryMode: effectiveReleaseChannel === 'actions' ? 'mirror-release' : githubDeliveryMode,
         updatePolicy: githubUpdatePolicy,
         historyLimit: githubUpdatePolicy === 'daily' ? 1 : githubHistoryLimit,
-        githubReleaseChannel,
-        githubReleaseTag: githubReleaseChannel === 'tag' ? githubReleaseTag : undefined,
-        githubActionsCommit: githubReleaseChannel === 'actions' ? githubActionsCommit : undefined,
+        githubReleaseChannel: effectiveReleaseChannel,
+        githubReleaseTag: effectiveReleaseTag,
+        githubReleaseAssetName: effectiveReleaseAssetName,
+        githubActionsCommit: effectiveReleaseChannel === 'actions' ? githubActionsCommit : undefined,
       });
       setGithubRepository('');
       setGithubName('');
@@ -379,10 +465,11 @@ export default function AddAppTabScreen() {
       setGithubHistoryLimit(3);
       setGithubReleaseChannel('release');
       setGithubReleaseTag('');
+      setGithubSelectedRelease(null);
       setGithubActionsCommit('');
       Alert.alert(
         'GitHub Import Started',
-        githubReleaseChannel === 'actions'
+        effectiveReleaseChannel === 'actions'
           ? 'GitHub accepted the request and is validating the Actions artifact in the background. It has not been added to the catalog yet. Actions artifacts expire, so a verified mirror will be kept if validation succeeds.'
           : 'GitHub accepted the request and is validating the selected source in the background. It has not been added to the catalog yet. The original link will be kept unless you chose a mirror.',
         importDispatch.workflowUrl
@@ -404,7 +491,7 @@ export default function AddAppTabScreen() {
     } finally {
       setIsSaving(false);
     }
-  }, [githubActionsCommit, githubCategory, githubDeliveryMode, githubDescription, githubHistoryLimit, githubIconUrl, githubName, githubReleaseChannel, githubReleaseTag, githubRepository, githubUpdatePolicy]);
+  }, [githubActionsCommit, githubCategory, githubDeliveryMode, githubDescription, githubHistoryLimit, githubIconUrl, githubName, githubReleaseChannel, githubReleaseTag, githubRepository, githubSelectedRelease, githubUpdatePolicy]);
 
   const handleExtractRepository = useCallback(async () => {
     setIsSaving(true);
@@ -665,21 +752,49 @@ export default function AddAppTabScreen() {
             ) : null}
 
             {importMethod === 'github' ? (
-              <SectionCard title="GitHub App Finder" detail="Choose the exact source: stable Release, Nightly, Alpha, a specific Tag, or the newest successful Actions build. The importer uses app metadata when available and never uses a developer profile photo as the app icon." theme={theme}>
-                <FormField theme={theme} label="GitHub Repository" placeholder="owner/repository or https://github.com/owner/repository" value={githubRepository} onChangeText={setGithubRepository} autoCapitalize="none" />
+              <SectionCard title="GitHub App Finder" detail="Browse stable Releases, Beta, Alpha, Nightly, other pre-releases, release-backed tags, or a successful Actions build. The importer uses app metadata when available and never uses a developer profile photo as the app icon." theme={theme}>
+                <FormField theme={theme} label="GitHub Repository" placeholder="owner/repository or https://github.com/owner/repository" value={githubRepository} onChangeText={handleGitHubRepositoryChange} autoCapitalize="none" />
                 <Text selectable style={[styles.inputLabel, { color: theme.label }]}>Release source</Text>
-                <Text selectable style={[styles.pickerHint, { color: theme.secondaryLabel }]}>Tap to choose Release, Nightly, Alpha, Tag, or a successful Workflow build.</Text>
+                <Text selectable style={[styles.pickerHint, { color: theme.secondaryLabel }]}>Choose a channel for daily tracking, a release-backed tag to pin a static build, or a successful Workflow build.</Text>
                 <GitHubReleaseChannelPicker
                   accentColor={accent}
                   disabled={isSaving}
                   value={githubReleaseChannel}
                   onChange={(nextChannel) => {
                     setGithubReleaseChannel(nextChannel);
+                    setGithubSelectedRelease(null);
+                    setGithubReleaseTag('');
                     if (nextChannel === 'actions') setGithubDeliveryMode('mirror-release');
+                    if (nextChannel === 'tag') setGithubUpdatePolicy('static');
                   }}
                 />
+                {githubReleaseChannel !== 'actions' ? (
+                  <>
+                    <Text selectable style={[styles.inputLabel, { color: theme.label }]}>Exact release (optional)</Text>
+                    <Text selectable style={[styles.pickerHint, { color: theme.secondaryLabel }]}>Daily follows the selected channel and IPA filename. Static pins the exact tag and IPA asset you choose.</Text>
+                    <GitHubReleaseCandidatePicker
+                      accentColor={accent}
+                      candidates={githubReleaseCandidates}
+                      disabled={isSaving || !isGitHubRepositoryReference(githubRepository)}
+                      isLoading={isLoadingGithubReleases}
+                      isTruncated={githubReleasesTruncated}
+                      onChange={(candidate) => {
+                        setGithubSelectedRelease(candidate);
+                        if (candidate) {
+                          setGithubReleaseChannel(candidate.channel);
+                          setGithubReleaseTag('');
+                          setGithubActionsCommit('');
+                        }
+                      }}
+                      value={githubSelectedRelease}
+                    />
+                    {githubReleasesLoadError ? (
+                      <Text selectable style={[styles.actionsLoadError, { color: theme.secondaryLabel }]}>{githubReleasesLoadError}</Text>
+                    ) : null}
+                  </>
+                ) : null}
                 {githubReleaseChannel === 'tag' ? (
-                  <FormField theme={theme} label="Release Tag" placeholder="v1.2.3" value={githubReleaseTag} onChangeText={setGithubReleaseTag} autoCapitalize="none" />
+                  <FormField theme={theme} label="Source Tag" placeholder="v1.2.3" value={githubReleaseTag} onChangeText={setGithubReleaseTag} autoCapitalize="none" />
                 ) : null}
                 {githubReleaseChannel === 'actions' ? (
                   <>
@@ -708,12 +823,14 @@ export default function AddAppTabScreen() {
                 />
                 <ImportUpdatePolicyPicker
                   accentColor={accent}
-                  detail={githubUpdatePolicy === 'daily'
+                  detail={githubReleaseChannel === 'tag'
+                    ? 'A raw Git tag is an exact build, so it is always Static / manual. Choose Release, Beta, Alpha, Nightly, or Pre-release for daily tracking.'
+                    : githubUpdatePolicy === 'daily'
                     ? 'Checks the selected source each day and keeps only the newest version.'
                     : 'Stops automatic checks so you can manage a manual version history.'}
-                  disabled={isSaving}
+                  disabled={isSaving || githubReleaseChannel === 'tag'}
                   onChange={setGithubUpdatePolicy}
-                  value={githubUpdatePolicy}
+                  value={githubReleaseChannel === 'tag' ? 'static' : githubUpdatePolicy}
                 />
                 {githubUpdatePolicy === 'static' ? (
                   <ImportHistoryLimitPicker

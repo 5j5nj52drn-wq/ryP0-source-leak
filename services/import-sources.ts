@@ -1,5 +1,6 @@
 import { fetch } from 'expo/fetch';
 import type { RepoApp, RepoVersion } from '../types/repo';
+import type { GitHubReleaseDiscoveryChannel } from '../types/github-release-channel';
 import { getSafeExternalHttpsUrl, isSafeExternalHttpsUrl } from './safe-url';
 import { queuePrivateImport } from './private-imports';
 
@@ -11,6 +12,9 @@ const REQUEST_TIMEOUT_MS = 20_000;
 // at 2 MB after allocating the whole response.
 const MAX_REPOSITORY_BYTES = 32 * 1024 * 1024;
 const MAX_GITHUB_BYTES = 16 * 1024 * 1024;
+const GITHUB_RELEASES_PAGE_SIZE = 100;
+const MAX_GITHUB_RELEASE_PAGES = 5;
+const GITHUB_CATALOG_CACHE_MS = 2 * 60 * 1000;
 
 type GitHubAsset = {
   name?: string;
@@ -59,7 +63,27 @@ type GitHubArtifactsResponse = {
 type GitHubReleaseIpa = {
   release: GitHubRelease;
   asset: GitHubAsset;
-  channel: 'release' | 'beta' | 'nightly' | 'alpha' | 'prerelease';
+  channel: GitHubReleaseDiscoveryChannel;
+};
+
+/** One public GitHub release asset the private importer can resolve exactly. */
+export type GitHubReleaseImportCandidate = {
+  id: string;
+  channel: GitHubReleaseDiscoveryChannel;
+  releaseTag: string;
+  releaseName: string;
+  assetName: string;
+  downloadURL: string;
+  publishedAt: string;
+  size: number;
+};
+
+export type GitHubImportCatalog = {
+  owner: string;
+  repository: string;
+  candidates: readonly GitHubReleaseImportCandidate[];
+  /** GitHub has more than the bounded 500 releases that were inspected. */
+  isTruncated: boolean;
 };
 
 type GitHubSourceMetadata = {
@@ -92,6 +116,11 @@ function today() {
 }
 
 type FetchOptions = { maxBytes?: number; timeoutMs?: number; signal?: AbortSignal };
+
+const githubImportCatalogCache = new Map<string, {
+  expiresAt: number;
+  value: GitHubImportCatalog;
+}>();
 
 async function fetchText(url: string, init: RequestInit = {}, options: FetchOptions = {}) {
   const controller = new AbortController();
@@ -167,8 +196,8 @@ async function fetchText(url: string, init: RequestInit = {}, options: FetchOpti
   }
 }
 
-async function fetchJson<T>(url: string, init: RequestInit = {}) {
-  const text = await fetchText(url, init);
+async function fetchJson<T>(url: string, init: RequestInit = {}, options: FetchOptions = {}) {
+  const text = await fetchText(url, init, options);
   try {
     return JSON.parse(text) as T;
   } catch {
@@ -196,17 +225,19 @@ export function normalizeGitHubRepository(value: string) {
     } catch {
       throw new ImportSourceError('Enter a valid GitHub repository URL.');
     }
-    if (url.hostname !== 'github.com' && url.hostname !== 'www.github.com') {
+    if (url.protocol !== 'https:' || (url.hostname !== 'github.com' && url.hostname !== 'www.github.com')) {
       throw new ImportSourceError('Use a github.com repository URL.');
     }
     path = url.pathname;
   }
 
-  const [owner, repository] = path.replace(/^\/+|\/+$/g, '').split('/').filter(Boolean);
-  if (!owner || !repository || !/^[\w.-]+$/.test(owner) || !/^[\w.-]+$/.test(repository)) {
+  const parts = path.replace(/^\/+|\/+$/g, '').split('/').filter(Boolean);
+  const owner = parts[0] || '';
+  const repository = (parts[1] || '').replace(/\.git$/i, '');
+  if (parts.length !== 2 || !/^[A-Za-z0-9._-]{1,100}$/.test(owner) || !repository || !/^[A-Za-z0-9._-]{1,100}$/.test(repository)) {
     throw new ImportSourceError('Enter a GitHub repository as owner/repository.');
   }
-  return { owner, repository: repository.replace(/\.git$/i, '') };
+  return { owner, repository };
 }
 
 function rawGitHubUrl(owner: string, repository: string, branch: string, path: string) {
@@ -219,20 +250,22 @@ function normalizedNameKey(value: unknown) {
 
 function releaseChannel(release: GitHubRelease): GitHubReleaseIpa['channel'] | null {
   if (release.draft) return null;
-  if (!release.prerelease) return 'release';
   const label = `${cleanString(release.name, 240)} ${cleanString(release.tag_name, 240)}`.toLocaleLowerCase();
+  // Some projects publish Nightly/Beta builds without checking GitHub's
+  // "pre-release" box.  Prefer the explicit release/tag name so users do not
+  // accidentally enroll a nightly updater as their stable release source.
   if (/\bbeta\b|(?:^|[-_.])b\d+(?:[-_.]|$)/.test(label)) return 'beta';
   if (/\bnightly\b|\bnight\b/.test(label)) return 'nightly';
   if (/\balpha\b|(?:^|[-_.])a\d+(?:[-_.]|$)/.test(label)) return 'alpha';
-  return 'prerelease';
+  return release.prerelease ? 'prerelease' : 'release';
 }
 
 function releaseChannelRank(channel: GitHubReleaseIpa['channel']) {
   switch (channel) {
     case 'release': return 0;
     case 'beta': return 1;
-    case 'nightly': return 2;
-    case 'alpha': return 3;
+    case 'alpha': return 2;
+    case 'nightly': return 3;
     case 'prerelease': return 4;
   }
 }
@@ -263,6 +296,76 @@ function findGitHubReleaseIpa(releases: readonly GitHubRelease[]): GitHubRelease
   candidates.sort((left, right) => releaseChannelRank(left.channel) - releaseChannelRank(right.channel) || left.order - right.order);
   const candidate = candidates[0];
   return candidate ? { release: candidate.release, asset: candidate.asset, channel: candidate.channel } : null;
+}
+
+function releaseImportCandidates(release: GitHubRelease, order: number): Array<GitHubReleaseImportCandidate & { order: number }> {
+  const channel = releaseChannel(release);
+  const releaseTag = cleanString(release.tag_name, 128);
+  if (!channel || !releaseTag) return [];
+  const publishedAt = cleanString(release.published_at || release.created_at, 64);
+  return (release.assets || [])
+    .filter(isSafeIpaAsset)
+    .map((asset) => {
+      const downloadURL = asset.browser_download_url!;
+      return {
+        id: `${releaseTag}\u0000${cleanString(asset.name, 240)}\u0000${downloadURL}`,
+        channel,
+        releaseTag,
+        releaseName: cleanString(release.name || releaseTag, 240),
+        assetName: cleanString(asset.name, 240),
+        downloadURL,
+        publishedAt,
+        size: asNonNegativeNumber(asset.size),
+        order,
+      };
+    });
+}
+
+/**
+ * Reads a bounded public GitHub release catalogue. No GitHub credential is
+ * sent from the app: this API is only for public metadata and each chosen IPA
+ * is validated again inside private automation before it reaches repo.json.
+ */
+export async function listGitHubReleaseImportCandidates(
+  repositoryReference: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<GitHubImportCatalog> {
+  const { owner, repository } = normalizeGitHubRepository(repositoryReference);
+  const cacheKey = `${owner.toLocaleLowerCase()}/${repository.toLocaleLowerCase()}`;
+  const cached = githubImportCatalogCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+
+  const repoPath = `${encodeURIComponent(owner)}/${encodeURIComponent(repository)}`;
+  const releases: GitHubRelease[] = [];
+  let isTruncated = false;
+  for (let page = 1; page <= MAX_GITHUB_RELEASE_PAGES; page += 1) {
+    const currentPage = await fetchJson<GitHubRelease[]>(
+      `https://api.github.com/repos/${repoPath}/releases?per_page=${GITHUB_RELEASES_PAGE_SIZE}&page=${page}`,
+      { credentials: 'omit' },
+      { signal: options.signal },
+    );
+    if (!Array.isArray(currentPage)) {
+      throw new ImportSourceError('GitHub returned an invalid release list.');
+    }
+    releases.push(...currentPage);
+    if (currentPage.length < GITHUB_RELEASES_PAGE_SIZE) break;
+    if (page === MAX_GITHUB_RELEASE_PAGES) isTruncated = true;
+  }
+
+  const seen = new Set<string>();
+  const candidates = releases
+    .flatMap((release, order) => releaseImportCandidates(release, order))
+    .filter((candidate) => {
+      if (seen.has(candidate.id)) return false;
+      seen.add(candidate.id);
+      return true;
+    })
+    .sort((left, right) => releaseChannelRank(left.channel) - releaseChannelRank(right.channel) || left.order - right.order)
+    .map(({ order: _order, ...candidate }) => candidate);
+
+  const value: GitHubImportCatalog = { owner, repository, candidates, isTruncated };
+  githubImportCatalogCache.set(cacheKey, { value, expiresAt: Date.now() + GITHUB_CATALOG_CACHE_MS });
+  return value;
 }
 
 function sourceJsonPathRank(path: string) {

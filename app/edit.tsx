@@ -2,10 +2,19 @@ import React from 'react';
 import { Alert, View, Text, StyleSheet } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import EditAppForm from '../components/edit-app-form';
+import { AdminRouteGate } from '../components/admin-route-gate';
 import { useRepoStore } from '../store/useRepoStore';
 import type { EditableAppFields } from '../types/edit-app-form';
 
 export default function EditAppScreen() {
+  return (
+    <AdminRouteGate title="Edit App">
+      <AuthorizedEditAppScreen />
+    </AdminRouteGate>
+  );
+}
+
+function AuthorizedEditAppScreen() {
   const { bundleIdentifier, section } = useLocalSearchParams<{
     bundleIdentifier: string;
     section?: 'card' | 'page' | 'versions';

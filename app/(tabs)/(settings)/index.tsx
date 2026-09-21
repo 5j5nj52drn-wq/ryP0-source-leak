@@ -5,6 +5,7 @@ import { Image } from 'expo-image';
 
 import { useRepoStore } from '../../../store/useRepoStore';
 import { ADMIN_GITHUB_LOGIN, isAdminGitHubLogin } from '../../../services/github-api';
+import { isAdminBuild } from '../../../services/build-variant';
 import {
   ACCENT_COLORS,
   AccentColor,
@@ -198,46 +199,71 @@ export default function Settings() {
           </ListItem>
         </FieldGroup.Section>
 
-        <FieldGroup.Section title="Developer Access">
-          <ListItem
-            leading={<SettingsSymbol name={isDeveloperMode ? 'checkmark.shield.fill' : 'shield.fill'} color={isDeveloperMode ? '#34C759' : accentValue} />}
-            supportingText={isDeveloperMode ? 'Editing and workflow controls are available on this device.' : 'Browse, search, and submit requests without repository write access.'}
-          >
-            <Text>{isDeveloperMode ? 'Developer Mode is enabled' : 'Consumer Mode (read-only)'}</Text>
-          </ListItem>
-          <TextInput
-            value={token}
-            onChangeText={handleChangeText}
-            placeholder={hasGitHubCredential ? 'Enter a replacement GitHub token' : 'Enter Token'}
-            secureTextEntry
-          />
-          <Button onPress={handleSave} disabled={isAuthenticating}>
-            <Text>{isAuthenticating ? 'Verifying GitHub…' : isDeveloperMode ? 'Validate & Replace Token' : 'Validate & Enable Developer Mode'}</Text>
-          </Button>
-          {isDeveloperMode ? (
-            <Button onPress={handleSignOut} disabled={isAuthenticating}>
-              <Text>Sign Out of Developer Mode</Text>
+        {isAdminBuild ? (
+          <FieldGroup.Section title="Developer Access">
+            <ListItem
+              leading={<SettingsSymbol name={isDeveloperMode ? 'checkmark.shield.fill' : 'shield.fill'} color={isDeveloperMode ? '#34C759' : accentValue} />}
+              supportingText={isDeveloperMode ? 'Editing and workflow controls are available on this device.' : 'Browse, search, and submit requests without repository write access.'}
+            >
+              <Text>{isDeveloperMode ? 'Developer Mode is enabled' : 'Consumer Mode (read-only)'}</Text>
+            </ListItem>
+            <TextInput
+              value={token}
+              onChangeText={handleChangeText}
+              placeholder={hasGitHubCredential ? 'Enter a replacement GitHub token' : 'Enter Token'}
+              secureTextEntry
+            />
+            <Button onPress={handleSave} disabled={isAuthenticating}>
+              <Text>{isAuthenticating ? 'Verifying GitHub…' : isDeveloperMode ? 'Validate & Replace Token' : 'Validate & Enable Developer Mode'}</Text>
             </Button>
-          ) : null}
-          <FieldGroup.SectionFooter>
-            <Text>Developer Mode verifies write access to the separate catalog, releases, and private automation repositories. The saved credential is device-only and protected by Face ID when available.</Text>
-            {authError ? <Text>{authError}</Text> : null}
-          </FieldGroup.SectionFooter>
-        </FieldGroup.Section>
+            {isDeveloperMode ? (
+              <Button onPress={handleSignOut} disabled={isAuthenticating}>
+                <Text>Sign Out of Developer Mode</Text>
+              </Button>
+            ) : null}
+            <FieldGroup.SectionFooter>
+              <Text>Developer Mode verifies write access to the separate catalog, releases, and private automation repositories. The saved credential is device-only and protected by Face ID when available.</Text>
+              {authError ? <Text>{authError}</Text> : null}
+            </FieldGroup.SectionFooter>
+          </FieldGroup.Section>
+        ) : (
+          <FieldGroup.Section title="Public Build">
+            <ListItem
+              leading={<SettingsSymbol name="shield.fill" color={accentValue} />}
+              supportingText="This consumer build cannot save GitHub credentials or open catalog-management tools."
+            >
+              <Text>Read-Only Catalog Access</Text>
+            </ListItem>
+            <FieldGroup.SectionFooter>
+              <Text>Send app requests from Add App. They are reviewed by ryP0 Admin before any catalog or automation change.</Text>
+            </FieldGroup.SectionFooter>
+          </FieldGroup.Section>
+        )}
 
         <FieldGroup.Section title="Security">
-          <ListItem
-            leading={<SettingsSymbol name="faceid" color={accentValue} />}
-            supportingText={credentialProtectionText}
-          >
-            <Text>Credential Protection</Text>
-          </ListItem>
-          <ListItem
-            leading={<SettingsSymbol name="key.fill" color={accentValue} />}
-            supportingText="The token stays in the Keychain and is never written to repo.json, AsyncStorage, or the app bundle."
-          >
-            <Text>Local-only credential</Text>
-          </ListItem>
+          {isAdminBuild ? (
+            <>
+              <ListItem
+                leading={<SettingsSymbol name="faceid" color={accentValue} />}
+                supportingText={credentialProtectionText}
+              >
+                <Text>Credential Protection</Text>
+              </ListItem>
+              <ListItem
+                leading={<SettingsSymbol name="key.fill" color={accentValue} />}
+                supportingText="The token stays in the Keychain and is never written to repo.json, AsyncStorage, or the app bundle."
+              >
+                <Text>Local-only credential</Text>
+              </ListItem>
+            </>
+          ) : (
+            <ListItem
+              leading={<SettingsSymbol name="shield.fill" color={accentValue} />}
+              supportingText="No GitHub, Telegram, R2, Cloudflare, or administrator credential is included in this build."
+            >
+              <Text>Credential-Free Build</Text>
+            </ListItem>
+          )}
         </FieldGroup.Section>
 
         <FieldGroup.Section title="About ryP0">

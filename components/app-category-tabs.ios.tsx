@@ -1,16 +1,19 @@
-import React, { useId } from 'react';
+import React, { useCallback, useId, useRef } from 'react';
 import { ColorValue } from 'react-native';
 import { Host } from '@expo/ui';
 import { Color } from 'expo-router';
-import { Button, GlassEffectContainer, HStack, Namespace, ScrollView } from '@expo/ui/swift-ui';
+import { Button, GlassEffectContainer, HStack, Namespace, ScrollView, useNativeState } from '@expo/ui/swift-ui';
 import {
-  Animation,
-  animation,
   buttonStyle,
   foregroundStyle,
   glassEffect,
   glassEffectId,
+  id,
+  onScrollPhaseChange,
   padding,
+  scrollIndicators,
+  scrollPosition,
+  scrollTargetLayout,
 } from '@expo/ui/swift-ui/modifiers';
 
 export type AppCategory = {
@@ -32,18 +35,41 @@ export default function AppCategoryTabs({
   accentColor = Color.ios.systemBlue,
 }: AppCategoryTabsProps) {
   const namespaceId = useId();
-  const selectedIndex = Math.max(0, categories.findIndex((category) => category.id === selectedCategory));
+  // A SwiftUI-backed scroll position survives React state changes. Without this
+  // binding, changing the selected glass pill can make SwiftUI rebuild the
+  // horizontal scroll view at its leading edge.
+  const scrollAnchor = useNativeState<string | null>(null);
+  const isScrollingRef = useRef(false);
+
+  const handleScrollPhaseChange = useCallback((phase: 'idle' | 'tracking' | 'interacting' | 'animating' | 'decelerating') => {
+    // Do not let the tail end of a horizontal swipe activate a category button.
+    // This is a phase event, not a per-frame callback, so it stays off the hot path.
+    isScrollingRef.current = phase !== 'idle';
+  }, []);
+
+  const selectCategory = useCallback((category: string) => {
+    if (isScrollingRef.current || category === selectedCategory) return;
+    onSelectCategory(category);
+  }, [onSelectCategory, selectedCategory]);
 
   return (
     <Host style={{ height: 52, marginBottom: 12, width: '100%' }}>
       <Namespace id={namespaceId}>
-        <ScrollView axes="horizontal" showsIndicators={false}>
+        <ScrollView
+          axes="horizontal"
+          showsIndicators={false}
+          modifiers={[
+            scrollPosition(scrollAnchor, { anchor: 'leading' }),
+            scrollIndicators('never', 'horizontal'),
+            onScrollPhaseChange(handleScrollPhaseChange),
+          ]}
+        >
           <GlassEffectContainer spacing={8}>
             <HStack
               spacing={8}
               modifiers={[
                 padding({ horizontal: 16, vertical: 6 }),
-                animation(Animation.spring({ response: 0.32, dampingFraction: 0.82 }), selectedIndex),
+                scrollTargetLayout(),
               ]}
             >
               {categories.map((category) => {
@@ -52,11 +78,12 @@ export default function AppCategoryTabs({
                   <Button
                     key={category.id}
                     label={category.label}
-                    onPress={() => onSelectCategory(category.id)}
+                    onPress={() => selectCategory(category.id)}
                     modifiers={[
                       buttonStyle('plain'),
                       foregroundStyle(selected ? '#FFFFFF' : Color.ios.label),
                       padding({ horizontal: 16, vertical: 9 }),
+                      id(category.id),
                       glassEffect({
                         glass: {
                           variant: selected ? 'regular' : 'clear',

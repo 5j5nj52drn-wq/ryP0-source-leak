@@ -29,6 +29,7 @@ import {
   storeGitHubToken,
 } from '../services/secure-credentials';
 import { requireSafeExternalHttpsUrl } from '../services/safe-url';
+import { isAdminBuild } from '../services/build-variant';
 
 export interface GithubFile {
   name: string;
@@ -173,6 +174,26 @@ export const useRepoStore = create<RepoState>((set, get) => ({
         console.error('Failed to inspect credential protection', error);
       }
 
+      // Public builds deliberately never restore or validate a local GitHub
+      // token. Its different application identifier isolates the Keychain
+      // item; this state-level guard protects upgrades and direct routes too.
+      if (!isAdminBuild) {
+        try {
+          await AsyncStorage.removeItem(LEGACY_TOKEN_KEY);
+        } catch (error) {
+          console.error('Failed to remove a legacy public-build credential', error);
+        }
+        set({
+          hasGitHubCredential: false,
+          githubLogin: null,
+          isDeveloperMode: false,
+          isInitialized: true,
+          isAuthenticating: false,
+          authError: null,
+        });
+        return;
+      }
+
       let storedToken: string | null = null;
       try {
         storedToken = await getStoredGitHubToken();
@@ -247,6 +268,19 @@ export const useRepoStore = create<RepoState>((set, get) => ({
     set({ isAuthenticating: true, authError: null });
 
     try {
+      if (!isAdminBuild) {
+        await deleteStoredGitHubToken();
+        await AsyncStorage.removeItem(LEGACY_TOKEN_KEY);
+        const error = new Error('This is the read-only ryP0 public build. Use ryP0 Admin for Developer Mode.');
+        set({
+          hasGitHubCredential: false,
+          githubLogin: null,
+          isDeveloperMode: false,
+          authError: error.message,
+        });
+        throw error;
+      }
+
       if (!normalizedToken) {
         await deleteStoredGitHubToken();
         await AsyncStorage.removeItem(LEGACY_TOKEN_KEY);
@@ -377,6 +411,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
 
   uploadIcon: async (base64Data: string, filename: string) => {
     const { isDeveloperMode } = get();
+    if (!isAdminBuild) throw new Error('This is the read-only ryP0 public build.');
     if (!isDeveloperMode) throw new Error('Validated Developer Mode access is required.');
 
     set({ isLoading: true, error: null });
@@ -394,6 +429,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
 
   renameIcon: async (filename: string, displayName: string) => {
     const { isDeveloperMode } = get();
+    if (!isAdminBuild) throw new Error('This is the read-only ryP0 public build.');
     if (!isDeveloperMode) throw new Error('Validated Developer Mode access is required.');
 
     const token = await getStoredGitHubToken();
@@ -450,6 +486,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
       const { repo, repoSha, isDeveloperMode } = get();
       if (!repo) throw new Error('No repository data to commit.');
       if (!repoSha) throw new Error('Refresh the repository before committing changes.');
+      if (!isAdminBuild) throw new Error('This is the read-only ryP0 public build.');
       if (!isDeveloperMode) throw new Error('Validated Developer Mode access is required.');
 
       set({ isLoading: true, error: null });

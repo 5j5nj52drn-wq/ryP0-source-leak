@@ -1,17 +1,19 @@
-import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
+  FlatList,
   TouchableOpacity,
   ActivityIndicator,
   Alert,
   StyleSheet,
   Platform,
 } from 'react-native';
-import Animated from 'react-native-reanimated';
 import { Stack, useRouter } from 'expo-router';
 import { useRepoStore } from '../../../store/useRepoStore';
+import { useShallow } from 'zustand/react/shallow';
 import { AppCard } from '../../../components/AppCard';
+import { APP_CARD_HEIGHT } from '../../../components/app-card-visual.types';
 import AppCategoryTabs from '../../../components/app-category-tabs';
 import { RepoApp } from '../../../types/repo';
 import { RotateCw } from 'lucide-react-native';
@@ -28,6 +30,14 @@ const CATEGORIES = [
   { id: 'tools', label: 'Tools' },
 ];
 
+const APP_CARD_ROW_HEIGHT = APP_CARD_HEIGHT + 14;
+const NOOP = () => {};
+const getAppItemLayout = (_: ArrayLike<RepoApp> | null | undefined, index: number) => ({
+  length: APP_CARD_ROW_HEIGHT,
+  offset: APP_CARD_ROW_HEIGHT * index,
+  index,
+});
+
 export default function SearchScreen() {
   const router = useRouter();
   const {
@@ -40,10 +50,25 @@ export default function SearchScreen() {
     searchQuery,
     setSearchQuery,
     accentColor,
-  } = useRepoStore();
+  } = useRepoStore(useShallow((state) => ({
+    repo: state.repo,
+    isLoading: state.isLoading,
+    fetchRepo: state.fetchRepo,
+    commitChanges: state.commitChanges,
+    isDeveloperMode: state.isDeveloperMode,
+    initializeStore: state.initializeStore,
+    searchQuery: state.searchQuery,
+    setSearchQuery: state.setSearchQuery,
+    accentColor: state.accentColor,
+  })));
   const theme = useAppTheme();
 
   const [selectedCategory, setSelectedCategory] = useState('all');
+  const selectedCategoryRef = useRef(selectedCategory);
+
+  useEffect(() => {
+    selectedCategoryRef.current = selectedCategory;
+  }, [selectedCategory]);
 
   const commitAfterChange = useCallback(async (successMessage?: string) => {
     try {
@@ -117,15 +142,16 @@ export default function SearchScreen() {
   );
 
   const handleCategorySelect = useCallback((category: string) => {
-    if (category === selectedCategory) return;
+    if (category === selectedCategoryRef.current) return;
+    selectedCategoryRef.current = category;
     setSelectedCategory(category);
-  }, [selectedCategory]);
+  }, []);
 
   const renderPlainItem = useCallback(
     ({ item, index }: { item: RepoApp; index: number }) => (
       <AppCard
         app={item}
-        drag={() => {}}
+        drag={NOOP}
         isActive={false}
         index={appIndexByBundle.get(item.bundleIdentifier) ?? index}
         onOpen={() => router.push({
@@ -195,16 +221,21 @@ export default function SearchScreen() {
 
   return (
     <>
-      <Animated.FlatList
+      <FlatList
         style={[styles.container, { backgroundColor: theme.background }]}
         data={filteredApps}
         keyExtractor={(item) => item.bundleIdentifier}
+        getItemLayout={getAppItemLayout}
         renderItem={renderPlainItem}
         ListHeaderComponent={categoryTabs}
         ListEmptyComponent={ListEmpty}
         contentContainerStyle={styles.listContent}
         showsVerticalScrollIndicator={false}
         contentInsetAdjustmentBehavior="automatic"
+        initialNumToRender={7}
+        maxToRenderPerBatch={7}
+        updateCellsBatchingPeriod={16}
+        windowSize={5}
         keyboardDismissMode="on-drag"
       />
       <Stack.SearchBar

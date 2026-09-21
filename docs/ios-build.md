@@ -122,6 +122,17 @@ The same private source tree produces two intentionally separate apps:
 
 Build the one you intend to install. Do not distribute the Admin IPA.
 
+### Separate app icons
+
+Both icon files must be square 1024×1024 PNG images with no manually drawn
+rounded corners. iOS supplies the final icon mask itself.
+
+- Put the public icon at `assets/icon-public.png`.
+- Put the private admin icon at `assets/icon-admin.png`.
+
+The build selects the matching image automatically. Until a variant-specific
+file exists, it safely falls back to the current `assets/icon.png` file.
+
 ```sh
 # Your private administrator build
 RYP0_APP_VARIANT=admin bash scripts/build-unsigned-ipa.sh dist/ios/admin

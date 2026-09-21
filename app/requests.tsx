@@ -4,6 +4,7 @@ import { Stack } from 'expo-router';
 import { Host, FieldGroup, ListItem, Text, Button } from '@expo/ui';
 import { scrollDisabled } from '@expo/ui/swift-ui/modifiers';
 import { approveAppRequest, fetchAppRequests } from '../services/app-requests';
+import { AdminRouteGate } from '../components/admin-route-gate';
 import type { AppRequestMethod, AppRequestRecord } from '../types/app-request';
 import { useRepoStore } from '../store/useRepoStore';
 import { getSafeExternalHttpsUrl } from '../services/safe-url';
@@ -24,6 +25,14 @@ function suggestedMethod(request: AppRequestRecord): AppRequestMethod {
 }
 
 export default function AppRequestsScreen() {
+  return (
+    <AdminRouteGate title="App Requests">
+      <AuthorizedAppRequestsScreen />
+    </AdminRouteGate>
+  );
+}
+
+function AuthorizedAppRequestsScreen() {
   const [requests, setRequests] = useState<AppRequestRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);

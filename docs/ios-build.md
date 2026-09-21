@@ -9,10 +9,10 @@ iOS signing or enable App Store/TestFlight distribution.
 
 ## GitHub Actions
 
-The workflow runs on pushes and pull requests to `main`, or from **Actions →
-Xcode - Build ryP0 IPA → Run workflow**. Download `ryP0-unsigned-<run number>`
-from the completed run's Artifacts section. The ZIP contains the IPA and a
-SHA-256 checksum. Build artifacts are retained for 14 days.
+The workflow is **manual only**: use **Actions → Xcode - Build ryP0 IPA → Run
+workflow** when you explicitly want an IPA. Download `ryP0-unsigned-<run
+number>` from the completed run's Artifacts section. The ZIP contains the IPA
+and a SHA-256 checksum. Build artifacts are retained for 14 days.
 
 The build uses Node 22.23.2 and Xcode 26.6 on `macos-26`. Expo SDK 57 requires
 [Node 22.13+ and Xcode 26.4+](https://docs.expo.dev/versions/v57.0.0/).
@@ -24,8 +24,9 @@ reviewed. GitHub-hosted macOS minutes are subject to your GitHub plan's limits.
 1. Runs `npm ci --include=dev`, including the `patch-package` postinstall hook.
 2. Checks TypeScript, generates iOS using Expo Prebuild, and installs CocoaPods.
 3. Runs `scripts/build-unsigned-ipa.sh` to compile Release without signing.
-4. Verifies the iPhone/arm64 binary and embedded Hermes bytecode, rejects source
-   maps in the app, then packages and checks the IPA.
+4. Verifies the iPhone/arm64 binary, the required UIKit scene lifecycle for
+   Xcode/iOS 27, and embedded Hermes bytecode; rejects source maps in the app,
+   then packages and checks the IPA.
 
 Keep native configuration in `app.json`, config plugins, and tracked local
 modules. Changes made only to the ignored `ios/` folder cannot reach a fresh
@@ -71,7 +72,7 @@ After selecting Xcode 26.4 or newer and Node 22.23.2:
 
 ```sh
 npm ci --include=dev
-npx expo prebuild --platform ios --no-install
+npx expo prebuild --clean --platform ios --no-install
 (cd ios && pod install)
 bash scripts/build-unsigned-ipa.sh
 ```
@@ -87,3 +88,65 @@ The script preserves existing IPA files and prints its temporary build/staging
 directories for inspection. It deliberately unsets `SKIP_BUNDLING`: even setting
 that variable to `0` makes React Native skip bundling. A missing or invalid
 `main.jsbundle` fails verification before an IPA is handed off.
+
+## Test a development build in the iOS Simulator
+
+`npx expo start --ios` starts Metro; it does not create the native development
+app that this project needs. After an iOS native configuration change, install a
+fresh development build once:
+
+```sh
+npx expo run:ios
+```
+
+Then, for normal JavaScript/UI work, start the local server with:
+
+```sh
+npx expo start --dev-client
+```
+
+The unsigned Release IPA above is different: it already contains its JavaScript
+bundle and must not depend on Metro when opened through a signing tool or
+LiveContainer.
+
+## Admin and public binaries
+
+The same private source tree produces two intentionally separate apps:
+
+- `admin` is **ryP0 Admin** (`com.ry0-x.ryP0`). It can unlock the verified
+  administrator account and stores its local GitHub credential in the device
+  Keychain.
+- `public` is **ryP0** (`com.ry0-x.ryP0.public`). It cannot store a GitHub
+  credential or open catalog-management routes; it can browse the catalog and
+  submit app requests for review.
+
+Build the one you intend to install. Do not distribute the Admin IPA.
+
+```sh
+# Your private administrator build
+RYP0_APP_VARIANT=admin bash scripts/build-unsigned-ipa.sh dist/ios/admin
+
+# Consumer build for other people
+RYP0_APP_VARIANT=public bash scripts/build-unsigned-ipa.sh dist/ios/public
+```
+
+After changing native configuration, regenerate and install pods once for the
+same variant before building the IPA:
+
+```sh
+RYP0_APP_VARIANT=public npx expo prebuild --clean --platform ios --no-install
+(cd ios && pod install)
+```
+
+## Local credential check
+
+Run this before committing or building a distribution IPA:
+
+```sh
+npm run security:scan
+```
+
+It checks tracked source, untracked files, and local `.env*` files for likely
+credentials without ever printing their values. Only public, non-secret
+configuration such as `EXPO_PUBLIC_CONTROL_API_URL` may use the `EXPO_PUBLIC_`
+prefix.

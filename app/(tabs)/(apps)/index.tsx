@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo, useCallback } from 'react';
+import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -13,8 +13,10 @@ import DraggableFlatList, { RenderItemParams } from 'react-native-draggable-flat
 import Animated, { useAnimatedScrollHandler } from 'react-native-reanimated';
 import { useRouter, Stack } from 'expo-router';
 import { useRepoStore } from '../../../store/useRepoStore';
+import { useShallow } from 'zustand/react/shallow';
 import { isScrollingDown, scrollY } from '../../../store/sharedScroll';
 import { AppCard } from '../../../components/AppCard';
+import { APP_CARD_HEIGHT } from '../../../components/app-card-visual.types';
 import AppCategoryTabs from '../../../components/app-category-tabs';
 import { RepoApp } from '../../../types/repo';
 import { Inbox } from 'lucide-react-native';
@@ -32,6 +34,14 @@ const CATEGORIES = [
   { id: 'tools', label: 'Tools' },
 ];
 
+const APP_CARD_ROW_HEIGHT = APP_CARD_HEIGHT + 14;
+const NOOP = () => {};
+const getAppItemLayout = (_: ArrayLike<RepoApp> | null | undefined, index: number) => ({
+  length: APP_CARD_ROW_HEIGHT,
+  offset: APP_CARD_ROW_HEIGHT * index,
+  index,
+});
+
 export default function HomeScreen() {
   const router = useRouter();
   const {
@@ -45,13 +55,29 @@ export default function HomeScreen() {
     initializeStore,
     searchQuery,
     accentColor,
-  } = useRepoStore();
+  } = useRepoStore(useShallow((state) => ({
+    repo: state.repo,
+    isLoading: state.isLoading,
+    error: state.error,
+    fetchRepo: state.fetchRepo,
+    reorderApps: state.reorderApps,
+    commitChanges: state.commitChanges,
+    isDeveloperMode: state.isDeveloperMode,
+    initializeStore: state.initializeStore,
+    searchQuery: state.searchQuery,
+    accentColor: state.accentColor,
+  })));
   const theme = useAppTheme();
   const safeAreaInsets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
   const toolbarThemeKey = colorScheme === 'dark' ? 'dark' : 'light';
 
   const [selectedCategory, setSelectedCategory] = useState('all');
+  const selectedCategoryRef = useRef(selectedCategory);
+
+  useEffect(() => {
+    selectedCategoryRef.current = selectedCategory;
+  }, [selectedCategory]);
 
   const commitAfterChange = useCallback(async (successMessage?: string) => {
     try {
@@ -150,9 +176,13 @@ export default function HomeScreen() {
   );
 
   const handleCategorySelect = useCallback((category: string) => {
-    if (category === selectedCategory) return;
+    // SwiftUI can deliver a second press before React commits the first one.
+    // Keep the source of truth in a ref so the same tab cannot queue duplicate
+    // category changes or restart the header's glass state.
+    if (category === selectedCategoryRef.current) return;
+    selectedCategoryRef.current = category;
     setSelectedCategory(category);
-  }, [selectedCategory]);
+  }, []);
 
   const renderDraggableItem = useCallback(
     ({ item, drag, isActive, getIndex }: RenderItemParams<RepoApp>) => {
@@ -160,7 +190,7 @@ export default function HomeScreen() {
       return (
         <AppCard
           app={item}
-          drag={selectedCategory === 'all' ? drag : () => {}}
+          drag={selectedCategory === 'all' ? drag : NOOP}
           isActive={isActive}
           index={appIndexByBundle.get(item.bundleIdentifier) ?? index}
           onOpen={() => router.push({
@@ -201,7 +231,7 @@ export default function HomeScreen() {
       return (
         <AppCard
           app={item}
-          drag={() => {}}
+          drag={NOOP}
           isActive={false}
           index={appIndexByBundle.get(item.bundleIdentifier) ?? index}
           onOpen={() => router.push({
@@ -293,12 +323,17 @@ export default function HomeScreen() {
             void commitAfterChange('The app order was saved to repo.json.');
           }}
           keyExtractor={item => item.bundleIdentifier}
+          getItemLayout={getAppItemLayout}
           renderItem={renderDraggableItem}
           ListHeaderComponent={categoryTabs}
           ListEmptyComponent={ListEmpty}
           contentContainerStyle={listContentStyle}
           showsVerticalScrollIndicator={false}
           contentInsetAdjustmentBehavior="automatic"
+          initialNumToRender={7}
+          maxToRenderPerBatch={7}
+          updateCellsBatchingPeriod={16}
+          windowSize={5}
           onScroll={scrollHandler}
           scrollEventThrottle={16}
         />
@@ -307,12 +342,17 @@ export default function HomeScreen() {
           style={[styles.list, { backgroundColor: theme.background }]}
           data={filteredApps}
           keyExtractor={(item: RepoApp) => item.bundleIdentifier}
+          getItemLayout={getAppItemLayout}
           renderItem={renderPlainItem}
           ListHeaderComponent={categoryTabs}
           ListEmptyComponent={ListEmpty}
           contentContainerStyle={listContentStyle}
           showsVerticalScrollIndicator={false}
           contentInsetAdjustmentBehavior="automatic"
+          initialNumToRender={7}
+          maxToRenderPerBatch={7}
+          updateCellsBatchingPeriod={16}
+          windowSize={5}
           onScroll={scrollHandler}
           scrollEventThrottle={16}
         />

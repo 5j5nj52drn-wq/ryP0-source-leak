@@ -2,6 +2,7 @@ import { Platform } from 'react-native';
 import Constants, { AppOwnership } from 'expo-constants';
 import * as LocalAuthentication from 'expo-local-authentication';
 import * as SecureStore from 'expo-secure-store';
+import { assertAdminBuild, isAdminBuild } from './build-variant';
 
 const GITHUB_TOKEN_KEY = 'ryp0.github_pat.v1';
 
@@ -63,6 +64,11 @@ async function assertSecureStorageAvailable(): Promise<void> {
 }
 
 export async function getStoredGitHubToken(): Promise<string | null> {
+  // A public build is a separate application identifier, but keep this guard
+  // here as a second layer in case an old binary or a direct route reaches the
+  // credential service.
+  if (!isAdminBuild) return null;
+
   if (Platform.OS === 'web' || !(await SecureStore.isAvailableAsync())) {
     return null;
   }
@@ -71,6 +77,7 @@ export async function getStoredGitHubToken(): Promise<string | null> {
 }
 
 export async function storeGitHubToken(token: string): Promise<void> {
+  assertAdminBuild();
   await assertSecureStorageAvailable();
   await SecureStore.setItemAsync(GITHUB_TOKEN_KEY, token, await secureStoreOptions());
 }

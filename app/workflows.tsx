@@ -11,6 +11,7 @@ import {
   type AppAutomationSnapshot,
   type AppAutomationSource,
 } from '../services/app-automations';
+import { AdminRouteGate } from '../components/admin-route-gate';
 import { useRepoStore } from '../store/useRepoStore';
 
 function sourceLabel(source: AppAutomationSource): string {
@@ -116,6 +117,14 @@ function userMessage(error: unknown, fallback: string): string {
 }
 
 export default function AppAutomationManagerScreen() {
+  return (
+    <AdminRouteGate title="Manage Apps">
+      <AuthorizedAppAutomationManagerScreen />
+    </AdminRouteGate>
+  );
+}
+
+function AuthorizedAppAutomationManagerScreen() {
   const isDeveloperMode = useRepoStore((state) => state.isDeveloperMode);
   const repositoryApps = useRepoStore((state) => state.repo?.apps ?? []);
   const [snapshot, setSnapshot] = useState<AppAutomationSnapshot | null>(null);

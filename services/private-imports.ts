@@ -45,8 +45,17 @@ export interface PrivateImportInput {
   selector?: string;
   /** The exact GitHub source channel to inspect for a GitHub import. */
   githubReleaseChannel?: GitHubReleaseChannel;
-  /** Required only when githubReleaseChannel is `tag`. */
+  /**
+   * Exact release tag. Required for the manual `tag` source; an optional
+   * picker selection supplies it for the initial import of a moving channel.
+   */
   githubReleaseTag?: string;
+  /**
+   * Optional IPA asset selector from a GitHub Release. With a moving Daily
+   * channel it selects the matching asset name; with `tag` it pins that exact
+   * release asset.
+   */
+  githubReleaseAssetName?: string;
   /** Optional SHA/prefix that scopes a GitHub Actions import to one commit. */
   githubActionsCommit?: string;
   /** Default is the original source URL; a mirror requires an explicit choice. */
@@ -88,16 +97,29 @@ function githubRepositoryUrl(value: string) {
       throw new PrivateImportError('Use a github.com repository URL.');
     }
     const parts = url.pathname.split('/').filter(Boolean);
-    if (parts.length !== 2 || !parts.every((part) => /^[A-Za-z0-9._-]{1,100}$/.test(part))) {
+    const owner = parts[0] || '';
+    const repository = (parts[1] || '').replace(/\.git$/i, '');
+    if (parts.length !== 2 || !/^[A-Za-z0-9._-]{1,100}$/.test(owner) || !repository || !/^[A-Za-z0-9._-]{1,100}$/.test(repository)) {
       throw new PrivateImportError('Use a GitHub repository as owner/repository.');
     }
-    return `https://github.com/${parts[0]}/${parts[1].replace(/\.git$/i, '')}`;
+    return `https://github.com/${owner}/${repository}`;
   }
   const parts = input.replace(/^\/+|\/+$/g, '').split('/');
-  if (parts.length !== 2 || !parts.every((part) => /^[A-Za-z0-9._-]{1,100}$/.test(part))) {
+  const owner = parts[0] || '';
+  const repository = (parts[1] || '').replace(/\.git$/i, '');
+  if (parts.length !== 2 || !/^[A-Za-z0-9._-]{1,100}$/.test(owner) || !repository || !/^[A-Za-z0-9._-]{1,100}$/.test(repository)) {
     throw new PrivateImportError('Use a GitHub repository as owner/repository.');
   }
-  return `https://github.com/${parts[0]}/${parts[1].replace(/\.git$/i, '')}`;
+  return `https://github.com/${owner}/${repository}`;
+}
+
+function normalizeGitHubReleaseAssetName(value: string | undefined) {
+  if (typeof value !== 'string' || !value.trim()) return '';
+  const name = value.trim().slice(0, 512);
+  if (!/\.ipa$/i.test(name) || /[\\/\u0000-\u001F\u007F]/.test(name)) {
+    throw new PrivateImportError('The selected GitHub release IPA asset is invalid. Choose it again from the release list.');
+  }
+  return name;
 }
 
 function defaultDeliveryMode(method: PrivateImportMethod): ImportDeliveryMode {
@@ -141,6 +163,7 @@ export async function queuePrivateImport(input: PrivateImportInput): Promise<{ w
   const uploadArtifactName = clean(input.uploadArtifactName, 160);
   const githubReleaseChannel = clean(input.githubReleaseChannel, 24).toLowerCase() || 'release';
   const githubReleaseTag = clean(input.githubReleaseTag, 128);
+  const githubReleaseAssetName = normalizeGitHubReleaseAssetName(input.githubReleaseAssetName);
   const githubActionsCommit = clean(input.githubActionsCommit, 40).toLowerCase();
   const deliveryMode = input.deliveryMode ?? defaultDeliveryMode(method);
   const updatePolicy = input.updatePolicy ?? defaultUpdatePolicy(method);
@@ -198,11 +221,14 @@ export async function queuePrivateImport(input: PrivateImportInput): Promise<{ w
     if (githubReleaseChannel === 'tag' && !githubReleaseTag) {
       throw new PrivateImportError('Enter the exact GitHub release tag to import.');
     }
-    if (githubReleaseChannel !== 'tag' && githubReleaseTag) {
-      throw new PrivateImportError('A GitHub release tag can only be used with the Tag source.');
+    if (githubReleaseChannel === 'actions' && githubReleaseTag) {
+      throw new PrivateImportError('A GitHub release tag cannot be used with Latest Actions Build.');
     }
     if (githubReleaseTag && !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(githubReleaseTag)) {
       throw new PrivateImportError('The GitHub release tag contains unsupported characters.');
+    }
+    if (githubReleaseChannel === 'actions' && githubReleaseAssetName) {
+      throw new PrivateImportError('An IPA asset name can only be chosen from a GitHub Release, not an Actions build.');
     }
     if (githubReleaseChannel !== 'actions' && githubActionsCommit) {
       throw new PrivateImportError('An Actions commit can only be used with Latest Actions Build.');
@@ -212,6 +238,9 @@ export async function queuePrivateImport(input: PrivateImportInput): Promise<{ w
     }
     if (githubReleaseChannel === 'actions' && deliveryMode !== 'mirror-release') {
       throw new PrivateImportError('GitHub Actions artifacts expire, so this source needs a mirror copy.');
+    }
+    if (githubReleaseChannel === 'tag' && updatePolicy !== 'static') {
+      throw new PrivateImportError('A raw Git tag is a static import. Choose a release channel for daily updates.');
     }
   }
 
@@ -245,6 +274,7 @@ export async function queuePrivateImport(input: PrivateImportInput): Promise<{ w
   if (method === 'github') {
     inputs.github_release_channel = githubReleaseChannel;
     if (githubReleaseTag) inputs.github_release_tag = githubReleaseTag;
+    if (githubReleaseAssetName) inputs.github_release_asset_name = githubReleaseAssetName;
     if (githubActionsCommit) inputs.github_actions_commit = githubActionsCommit;
   }
   if (method === 'telegram-r2') inputs.archive_to_r2 = 'true';
